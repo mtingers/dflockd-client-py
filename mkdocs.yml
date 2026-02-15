@@ -1,8 +1,8 @@
 site_name: dflockd-client
-site_url: https://mtingers.github.io/dflockd-client/
-site_description: dflockd python client
-repo_url: https://github.com/mtingers/dflockd-client
-repo_name: mtingers/dflockd-client
+site_url: https://mtingers.github.io/dflockd-client-py/
+site_description: Python client library for dflockd
+repo_url: https://github.com/mtingers/dflockd-client-py
+repo_name: mtingers/dflockd-client-py
 
 theme:
   name: material
@@ -60,12 +60,9 @@ nav:
   - Guide:
     - Architecture: guide/architecture.md
     - Sharding: guide/sharding.md
-  - Server:
-    - Configuration: server/configuration.md
   - Client:
     - Async Client: client/async.md
     - Sync Client: client/sync.md
   - API Reference:
-    - Wire Protocol: api/protocol.md
     - Python API: api/python.md
   - Changelog: changelog.md

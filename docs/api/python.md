@@ -1,6 +1,6 @@
 # Python API
 
-## dflockd.client (async)
+## dflockd_client.client (async)
 
 ### DistributedLock
 
@@ -105,7 +105,7 @@ Two-phase step 2: block until lock is granted. Returns `(token, lease)`. Raises 
 
 ---
 
-## dflockd.sync_client
+## dflockd_client.sync_client
 
 ### DistributedLock
 
@@ -202,7 +202,7 @@ Two-phase step 2: block until lock is granted. Returns `(token, lease)`. Raises 
 
 ---
 
-## dflockd.sharding
+## dflockd_client.sharding
 
 ### ShardingStrategy
 

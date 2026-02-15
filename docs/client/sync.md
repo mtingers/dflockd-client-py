@@ -3,7 +3,7 @@
 The sync client uses standard `socket` and `threading` for blocking lock operations with automatic background lease renewal. No asyncio required.
 
 ```python
-from dflockd.sync_client import DistributedLock
+from dflockd_client.sync_client import DistributedLock
 ```
 
 ## Context manager
@@ -11,7 +11,7 @@ from dflockd.sync_client import DistributedLock
 The recommended way to use the client:
 
 ```python
-from dflockd.sync_client import DistributedLock
+from dflockd_client.sync_client import DistributedLock
 
 with DistributedLock("my-key", acquire_timeout_s=10) as lock:
     print(f"token={lock.token} lease={lock.lease}")
@@ -104,7 +104,7 @@ Direct protocol functions are also available:
 
 ```python
 import socket
-from dflockd.sync_client import acquire, release, renew
+from dflockd_client.sync_client import acquire, release, renew
 
 sock = socket.create_connection(("127.0.0.1", 6388))
 rfile = sock.makefile("r", encoding="utf-8")
@@ -120,7 +120,7 @@ sock.close()
 The two-phase functions are also available at the low level:
 
 ```python
-from dflockd.sync_client import enqueue, wait, release
+from dflockd_client.sync_client import enqueue, wait, release
 
 sock = socket.create_connection(("127.0.0.1", 6388))
 rfile = sock.makefile("r", encoding="utf-8")
@@ -141,7 +141,7 @@ sock.close()
 
 | | Async | Sync |
 |---|---|---|
-| Import | `dflockd.client` | `dflockd.sync_client` |
+| Import | `dflockd_client.client` | `dflockd_client.sync_client` |
 | Context manager | `async with` | `with` |
 | Renewal | `asyncio.Task` | `threading.Thread` (daemon) |
 | Cleanup | `await lock.aclose()` | `lock.close()` |

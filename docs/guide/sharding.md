@@ -20,7 +20,7 @@ Unlike Python's built-in `hash()`, CRC-32 produces the same result across proces
 Pass a list of `(host, port)` tuples to the client:
 
 ```python
-from dflockd.sync_client import DistributedLock
+from dflockd_client.sync_client import DistributedLock
 
 servers = [
     ("lock-server-1", 6388),
@@ -38,7 +38,7 @@ with DistributedLock("my-key", servers=servers) as lock:
 Provide any callable with the signature `(key: str, num_servers: int) -> int`:
 
 ```python
-from dflockd.sync_client import DistributedLock
+from dflockd_client.sync_client import DistributedLock
 
 def region_shard(key: str, num_servers: int) -> int:
     """Route keys prefixed with 'eu-' to server 0, everything else hashed."""

@@ -2,45 +2,35 @@
 
 ## Requirements
 
-- Python 3.13 or later
-- No external dependencies
+- Python 3.12 or later
+- A running [dflockd](https://github.com/mtingers/dflockd) server
+- No external Python dependencies
 
 ## Install from PyPI
 
 === "pip"
 
     ```bash
-    pip install dflockd
+    pip install dflockd-client
     ```
 
 === "uv"
 
     ```bash
-    uv add dflockd
+    uv add dflockd-client
     ```
 
 ## Install from source
 
 ```bash
-git clone https://github.com/mtingers/dflockd.git
-cd dflockd
+git clone https://github.com/mtingers/dflockd-client-py.git
+cd dflockd-client-py
 uv sync
 ```
 
 ## Verify installation
 
-Start the server to confirm everything is working:
-
-```bash
-# If installed from PyPI
-dflockd
-
-# If installed from source
-uv run dflockd
-```
-
-You should see log output indicating the server is listening:
-
-```
-INFO dflockd: listening on ('0.0.0.0', 6388)
+```python
+from dflockd_client.client import DistributedLock
+print("dflockd-client installed successfully")
 ```

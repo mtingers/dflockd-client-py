@@ -1,4 +1,4 @@
-"""Integration tests: async client and sync client against a real server."""
+"""Integration tests: async client and sync client against a running dflockd server."""
 
 import asyncio
 import socket
@@ -7,9 +7,8 @@ import time
 
 import pytest
 
-import dflockd.client as aclient
-import dflockd.server as srv
-import dflockd.sync_client as sclient
+import dflockd_client.client as aclient
+import dflockd_client.sync_client as sclient
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -27,7 +26,7 @@ def _sync_connect(port: int) -> tuple[socket.socket, ...]:
 
 
 # ===========================================================================
-# Async client (dflockd.client) — low-level functions
+# Async client — low-level functions
 # ===========================================================================
 
 
@@ -169,14 +168,14 @@ class TestAsyncDistributedLock:
 
 
 # ===========================================================================
-# Sync client (dflockd.sync_client) — low-level functions
+# Sync client — low-level functions
 # ===========================================================================
 
 
 class TestSyncAcquireRelease:
     @pytest.mark.asyncio
     async def test_acquire_and_release(self, server_port):
-        """Run sync client in a thread against the async server."""
+        """Run sync client in a thread against the server."""
 
         def _work():
             sock, rfile = _sync_connect(server_port)
@@ -277,7 +276,7 @@ class TestSyncDistributedLock:
 
 
 # ===========================================================================
-# Disconnect / lease-expiry integration
+# Disconnect behavior
 # ===========================================================================
 
 
@@ -299,35 +298,6 @@ class TestDisconnectBehavior:
             assert token2 is not None
         finally:
             w2.close()
-
-    @pytest.mark.asyncio
-    async def test_lease_expiry_allows_reacquire(self, server_port):
-        """Acquire with a very short lease; after expiry another client gets it."""
-        old_sweep = srv.LEASE_SWEEP_INTERVAL_S
-        srv.LEASE_SWEEP_INTERVAL_S = 0.1
-        try:
-            r1, w1 = await _open(server_port)
-            # Acquire with 1-second lease; don't renew
-            token1, _ = await aclient.acquire(r1, w1, "k1", 5, lease_ttl_s=1)
-
-            # Wait for lease to expire
-            await asyncio.sleep(1.5)
-
-            r2, w2 = await _open(server_port)
-            try:
-                token2, _ = await aclient.acquire(r2, w2, "k1", 2, lease_ttl_s=30)
-                assert token2 is not None
-                assert token2 != token1
-            finally:
-                w2.close()
-        finally:
-            w1.close()
-            srv.LEASE_SWEEP_INTERVAL_S = old_sweep
-
-
-# ===========================================================================
-# Sharding
-# ===========================================================================
 
 
 # ===========================================================================

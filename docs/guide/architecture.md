@@ -2,88 +2,70 @@
 
 ## Overview
 
-dflockd is a single-process asyncio server that manages named locks with FIFO ordering, automatic lease expiry, and garbage collection of idle state.
+The dflockd-client library provides async and sync Python clients for [dflockd](https://github.com/mtingers/dflockd), a distributed lock server. Both clients communicate with the server over TCP using a line-based UTF-8 protocol.
 
 ```
-┌──────────┐    TCP     ┌─────────────────────────────────────┐
-│  Client   │◄─────────►│            dflockd server           │
-│  (async   │  line-    │                                     │
-│   or sync)│  based    │  ┌──────────┐  ┌────────────────┐  │
-└──────────┘  UTF-8     │  │  Lock     │  │  Background    │  │
-                        │  │  State    │  │  Tasks         │  │
-┌──────────┐            │  │          │  │                │  │
-│  Client   │◄─────────►│  │  key →   │  │  • lease       │  │
-└──────────┘            │  │   owner  │  │    expiry      │  │
-                        │  │   waiter │  │  • lock GC     │  │
-┌──────────┐            │  │   queue  │  │                │  │
-│  Client   │◄─────────►│  └──────────┘  └────────────────┘  │
-└──────────┘            └─────────────────────────────────────┘
+┌─────────────────────────────────┐
+│        Your application         │
+│                                 │
+│  ┌───────────┐  ┌───────────┐  │
+│  │  Async    │  │  Sync     │  │
+│  │  Client   │  │  Client   │  │
+│  └─────┬─────┘  └─────┬─────┘  │
+│        │              │         │
+│  ┌─────┴──────────────┴─────┐  │
+│  │     Sharding layer       │  │
+│  └─────┬──────────────┬─────┘  │
+└────────┼──────────────┼────────┘
+         │   TCP        │   TCP
+    ┌────▼────┐    ┌────▼────┐
+    │ dflockd │    │ dflockd │
+    │ server  │    │ server  │
+    └─────────┘    └─────────┘
 ```
 
-## Lock state
+## Client lifecycle
 
-Each named lock key maintains a `LockState`:
+### Connection
 
-- **owner_token** — the UUID token of the current holder (or `None` if free)
-- **owner_conn_id** — connection ID of the current holder
-- **lease_expires_at** — monotonic timestamp when the lease expires
-- **waiters** — FIFO deque of pending acquire requests
-- **last_activity** — timestamp of the most recent operation (used for GC)
+When `acquire()` or `enqueue()` is called, the client:
 
-## FIFO acquire flow
+1. Selects a server using the sharding strategy (based on the lock key).
+2. Opens a TCP connection to that server.
+3. Sends the lock request over the wire.
 
-1. A client sends a lock request for key `K` with timeout `T` and optional lease TTL.
-2. If `K` is free and has no waiters, the lock is granted immediately (fast path).
-3. Otherwise, the client is appended to the waiter deque and blocks until:
-    - The lock is granted (previous holder released or lease expired), or
-    - The timeout `T` elapses (client receives `timeout`).
-4. When a lock is released or expires, the next waiter in FIFO order is granted the lock.
+### Lock acquisition
 
-## Two-phase acquire flow
+- **Single-phase (`acquire`)** — sends a lock request with a timeout. The server grants the lock immediately if free, or enqueues the client in FIFO order. The call blocks until the lock is granted or the timeout expires.
+- **Two-phase (`enqueue` + `wait`)** — splits acquisition into two steps. `enqueue()` joins the queue and returns immediately with `"acquired"` or `"queued"`. `wait()` blocks until the lock is granted. This allows application logic (e.g. notifying an external system) between joining the queue and blocking.
 
-The two-phase flow splits acquisition into enqueue (`e`) and wait (`w`), allowing application logic between joining the queue and blocking:
+### Background renewal
 
-1. A client sends an enqueue request (`e`) for key `K` with optional lease TTL.
-2. If `K` is free and has no waiters, the lock is granted immediately (fast path). The server returns `acquired <token> <lease>` and the client can begin renewal.
-3. Otherwise, the client is appended to the waiter deque and the server returns `queued` immediately (non-blocking).
-4. The client performs application logic (e.g. notifying an external system).
-5. The client sends a wait request (`w`) for key `K` with timeout `T`.
-6. If the lock was already acquired (fast path), the server resets the lease and returns `ok <token> <lease>`.
-7. Otherwise, the client blocks until the lock is granted or timeout elapses.
-8. On success, the lease is reset to `now + lease_ttl_s`, giving the client the full TTL from the moment `w` returns.
+Once a lock is acquired, the client starts a background renewal loop:
 
-The two-phase flow uses an `EnqueuedState` tracked per `(conn_id, key)`. This state is cleaned up on disconnect, timeout, or successful wait.
+- **Async client** — an `asyncio.Task` that sends renew requests at `lease * renew_ratio` intervals.
+- **Sync client** — a daemon `threading.Thread` that does the same.
 
-## Background tasks
+If renewal fails (server unreachable, lease already expired), the client logs an error and sets `token = None`.
 
-### Lease expiry loop
+### Release and cleanup
 
-Runs every `LEASE_SWEEP_INTERVAL_S` seconds (default: 1s). For each held lock:
+On `release()` or context manager exit:
 
-- If `now >= lease_expires_at`, the owner is evicted and the lock passes to the next FIFO waiter.
-- This prevents deadlocks from crashed or hung clients.
+1. The renewal loop is stopped.
+2. A release command is sent to the server.
+3. The TCP connection is closed.
 
-### Lock garbage collection
+If the client disconnects without releasing (crash, network failure), the server automatically releases the lock when the lease expires or on disconnect (if auto-release is enabled on the server).
 
-Runs every `GC_LOOP_SLEEP` seconds (default: 5s). Prunes lock state entries where:
+## Sharding
 
-- No owner is holding the lock
-- No waiters are queued
-- The key has been idle longer than `GC_MAX_UNUSED_TIME` (default: 60s)
+When multiple servers are configured, the client uses a sharding strategy to deterministically map each lock key to a server. The default strategy uses `zlib.crc32` for stable hashing. See [Sharding](sharding.md) for details.
 
-This prevents unbounded memory growth from transient keys.
+## Module structure
 
-## Connection cleanup
-
-When `DFLOCKD_AUTO_RELEASE_ON_DISCONNECT` is enabled (the default), the server performs cleanup when a TCP connection closes (graceful or abrupt):
-
-1. Cleans up any two-phase enqueued state (`_conn_enqueued`) for the connection, cancelling pending waiters and removing them from lock queues.
-2. Cancels any pending waiter futures belonging to that connection.
-3. Releases any locks held by that connection.
-4. Transfers released locks to the next FIFO waiter, if any.
-
-If disabled, locks from disconnected clients are only freed when their lease expires.
-
-## Concurrency model
-
-All lock state mutations are serialized through a single `asyncio.Lock` (`tracking_lock`). This ensures consistency without complex fine-grained locking, while asyncio's cooperative scheduling keeps throughput high for the I/O-bound workload.
+| Module | Description |
+|---|---|
+| `dflockd_client.client` | Async client (`asyncio`-based) |
+| `dflockd_client.sync_client` | Sync client (`socket` + `threading`-based) |
+| `dflockd_client.sharding` | Sharding strategy and defaults |

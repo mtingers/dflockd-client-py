@@ -1,6 +1,6 @@
 """Unit tests for the sharding module."""
 
-from dflockd.sharding import DEFAULT_SERVERS, stable_hash_shard
+from dflockd_client.sharding import DEFAULT_SERVERS, stable_hash_shard
 
 
 class TestStableHashShard:

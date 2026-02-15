@@ -8,7 +8,7 @@ Acquire a lock, hold it for an extended period while the client automatically re
 
     ```python
     import asyncio
-    from dflockd.client import DistributedLock
+    from dflockd_client.client import DistributedLock
 
     async def main():
         async with DistributedLock("foo", acquire_timeout_s=10, lease_ttl_s=20) as lock:
@@ -23,7 +23,7 @@ Acquire a lock, hold it for an extended period while the client automatically re
 
     ```python
     import time
-    from dflockd.sync_client import DistributedLock
+    from dflockd_client.sync_client import DistributedLock
 
     with DistributedLock("foo", acquire_timeout_s=10, lease_ttl_s=20) as lock:
         print(f"acquired key={lock.key} token={lock.token} lease={lock.lease}")
@@ -39,7 +39,7 @@ Multiple workers competing for the same lock are granted access in FIFO order:
 
     ```python
     import asyncio
-    from dflockd.client import DistributedLock
+    from dflockd_client.client import DistributedLock
 
     async def worker(worker_id: int):
         async with DistributedLock("foo", acquire_timeout_s=12) as lock:
@@ -59,7 +59,7 @@ Multiple workers competing for the same lock are granted access in FIFO order:
     ```python
     import threading
     import time
-    from dflockd.sync_client import DistributedLock
+    from dflockd_client.sync_client import DistributedLock
 
     def worker(worker_id: int):
         with DistributedLock("foo", acquire_timeout_s=30) as lock:
@@ -82,7 +82,7 @@ Split enqueue and wait to notify an external system between joining the queue an
 
     ```python
     import asyncio
-    from dflockd.client import DistributedLock
+    from dflockd_client.client import DistributedLock
 
     async def main():
         lock = DistributedLock("my-key", acquire_timeout_s=10, lease_ttl_s=20)
@@ -105,7 +105,7 @@ Split enqueue and wait to notify an external system between joining the queue an
 === "Sync"
 
     ```python
-    from dflockd.sync_client import DistributedLock
+    from dflockd_client.sync_client import DistributedLock
 
     lock = DistributedLock("my-key", acquire_timeout_s=10, lease_ttl_s=20)
 
@@ -128,7 +128,7 @@ If the lock is free at enqueue time, it is acquired immediately (fast path) and 
 Distribute keys across multiple dflockd instances. Each key deterministically routes to the same server:
 
 ```python
-from dflockd.sync_client import DistributedLock
+from dflockd_client.sync_client import DistributedLock
 
 servers = [("server1", 6388), ("server2", 6388), ("server3", 6388)]
 
@@ -141,7 +141,7 @@ with DistributedLock("my-key", servers=servers) as lock:
 Override the default CRC-32 sharding with your own logic:
 
 ```python
-from dflockd.sync_client import DistributedLock
+from dflockd_client.sync_client import DistributedLock
 
 def my_strategy(key: str, num_servers: int) -> int:
     """Route all keys to the first server."""
@@ -151,18 +151,4 @@ servers = [("server1", 6388), ("server2", 6388)]
 
 with DistributedLock("my-key", servers=servers, sharding_strategy=my_strategy) as lock:
     print(f"token={lock.token}")
-```
-
-## Raw TCP protocol
-
-You can interact with dflockd from any language using its line-based TCP protocol:
-
-```bash
-# Acquire a lock with 10s timeout
-printf 'l\nmy-key\n10\n' | nc localhost 6388
-# Response: ok <token> <lease_ttl>
-
-# Release (substitute your token)
-printf 'r\nmy-key\n<token>\n' | nc localhost 6388
-# Response: ok
 ```

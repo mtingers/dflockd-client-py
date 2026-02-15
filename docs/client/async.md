@@ -3,7 +3,7 @@
 The async client uses `asyncio` for non-blocking lock operations with automatic background lease renewal.
 
 ```python
-from dflockd.client import DistributedLock
+from dflockd_client.client import DistributedLock
 ```
 
 ## Context manager
@@ -12,7 +12,7 @@ The recommended way to use the client. The lock is acquired on entry and release
 
 ```python
 import asyncio
-from dflockd.client import DistributedLock
+from dflockd_client.client import DistributedLock
 
 async def main():
     async with DistributedLock("my-key", acquire_timeout_s=10) as lock:
@@ -112,7 +112,7 @@ if await lock.wait(timeout_s=10):
 The module also exposes low-level protocol functions for direct use:
 
 ```python
-from dflockd.client import acquire, release, renew, enqueue, wait
+from dflockd_client.client import acquire, release, renew, enqueue, wait
 
 reader, writer = await asyncio.open_connection("127.0.0.1", 6388)
 

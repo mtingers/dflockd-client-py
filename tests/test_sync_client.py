@@ -1,4 +1,4 @@
-"""Tests for dflockd.sync_client — unit tests and integration tests."""
+"""Tests for dflockd_client.sync_client — unit tests and integration tests."""
 
 import asyncio
 import io
@@ -8,8 +8,7 @@ import time
 
 import pytest
 
-import dflockd.server as srv
-import dflockd.sync_client as sc
+import dflockd_client.sync_client as sc
 
 
 # ---------------------------------------------------------------------------
@@ -111,19 +110,6 @@ class TestAcquireRelease:
             try:
                 token, lease = sc.acquire(sock, rfile, "k1", 5, lease_ttl_s=20)
                 assert lease == 20
-                sc.release(sock, rfile, "k1", token)
-            finally:
-                _close(sock, rfile)
-
-        await asyncio.to_thread(_work)
-
-    async def test_acquire_uses_server_default_lease(self, server_port):
-        def _work():
-            sock, rfile = _connect(server_port)
-            try:
-                token, lease = sc.acquire(sock, rfile, "k1", 5)
-                # server_port fixture sets DEFAULT_LEASE_TTL_S = 5
-                assert lease == 5
                 sc.release(sock, rfile, "k1", token)
             finally:
                 _close(sock, rfile)
@@ -369,27 +355,22 @@ class TestDistributedLockMethods:
 class TestRenewLoop:
     async def test_renew_keeps_lock_alive(self, server_port):
         """With a short lease and renew, the lock should stay held past its initial TTL."""
-        old_sweep = srv.LEASE_SWEEP_INTERVAL_S
-        srv.LEASE_SWEEP_INTERVAL_S = 0.2
-        try:
 
-            def _work():
-                lock = sc.DistributedLock(
-                    key="k1",
-                    acquire_timeout_s=5,
-                    lease_ttl_s=2,
-                    servers=[("127.0.0.1", server_port)],
-                    renew_ratio=0.3,  # renew every ~0.6s
-                )
-                with lock:
-                    # Sleep past original lease
-                    time.sleep(3)
-                    # Lock should still be held because renew kept it alive
-                    assert lock.token is not None
+        def _work():
+            lock = sc.DistributedLock(
+                key="k1",
+                acquire_timeout_s=5,
+                lease_ttl_s=2,
+                servers=[("127.0.0.1", server_port)],
+                renew_ratio=0.3,  # renew every ~0.6s
+            )
+            with lock:
+                # Sleep past original lease
+                time.sleep(3)
+                # Lock should still be held because renew kept it alive
+                assert lock.token is not None
 
-            await asyncio.to_thread(_work)
-        finally:
-            srv.LEASE_SWEEP_INTERVAL_S = old_sweep
+        await asyncio.to_thread(_work)
 
     async def test_renew_stops_on_release(self, server_port):
         """After release(), the renew thread should be stopped."""
@@ -511,7 +492,7 @@ class TestDisconnect:
 
         await asyncio.to_thread(_work)
 
-    async def test_server_closed_connection_raises(self, server_port):
+    def test_server_closed_connection_raises(self):
         """If the server side closes, _readline should raise ConnectionError."""
         buf = io.StringIO("")
         with pytest.raises(ConnectionError):
@@ -598,7 +579,7 @@ class TestSyncTwoPhase:
         await asyncio.to_thread(_work)
 
     async def test_distributed_lock_two_phase_contention(self, server_port):
-        """lock1 holds, lock2 does enqueue+wait, lock1 releases → lock2 gets it."""
+        """lock1 holds, lock2 does enqueue+wait, lock1 releases -> lock2 gets it."""
 
         def _work():
             lock1 = sc.DistributedLock(
