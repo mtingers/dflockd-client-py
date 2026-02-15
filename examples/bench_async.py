@@ -13,7 +13,7 @@ import statistics
 import time
 import random
 
-from dflockd.client import DistributedLock
+from dflockd_client.client import DistributedLock
 
 
 def parse_servers(raw: str) -> list[tuple[str, int]]:

@@ -12,7 +12,7 @@ import statistics
 import threading
 import time
 
-from dflockd.sync_client import DistributedLock
+from dflockd_client.sync_client import DistributedLock
 
 
 def parse_servers(raw: str) -> list[tuple[str, int]]:

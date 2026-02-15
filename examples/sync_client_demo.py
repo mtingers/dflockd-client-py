@@ -1,7 +1,7 @@
 import threading
 import time
 
-from dflockd.sync_client import DistributedLock
+from dflockd_client.sync_client import DistributedLock
 
 
 def demo():

@@ -9,7 +9,7 @@ Usage:
 
 import asyncio
 
-from dflockd.client import DistributedLock
+from dflockd_client.client import DistributedLock
 
 
 def notify_external_system(worker_id: int, status: str):
