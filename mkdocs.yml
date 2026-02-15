@@ -1,0 +1,71 @@
+site_name: dflockd-client
+site_url: https://mtingers.github.io/dflockd-client/
+site_description: dflockd python client
+repo_url: https://github.com/mtingers/dflockd-client
+repo_name: mtingers/dflockd-client
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.instant
+    - navigation.sections
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets:
+      check_paths: true
+  - pymdownx.inlinehilite
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quickstart.md
+    - Examples: getting-started/examples.md
+  - Guide:
+    - Architecture: guide/architecture.md
+    - Sharding: guide/sharding.md
+  - Server:
+    - Configuration: server/configuration.md
+  - Client:
+    - Async Client: client/async.md
+    - Sync Client: client/sync.md
+  - API Reference:
+    - Wire Protocol: api/protocol.md
+    - Python API: api/python.md
+  - Changelog: changelog.md
