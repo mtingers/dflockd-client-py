@@ -1,6 +1,7 @@
 # dflockd-client
 
 <!--toc:start-->
+
 - [dflockd-client](#dflockd-client)
   - [Installation](#installation)
   - [Quick start](#quick-start)
@@ -10,9 +11,13 @@
     - [Two-phase lock acquisition](#two-phase-lock-acquisition)
     - [Parameters](#parameters)
   - [Multi-server sharding](#multi-server-sharding)
-<!--toc:end-->
+          <!--toc:end-->
 
-A Python client library for [dflockd](https://github.com/mtingers/dflockd) — a lightweight distributed lock server with FIFO ordering, automatic lease expiry, and background renewal.
+A Python client library for [dflockd](https://github.com/mtingers/dflockd) — a
+lightweight distributed lock server with FIFO ordering, automatic lease expiry,
+and background renewal.
+
+[Read the docs here](https://mtingers.github.io/dflockd-client-py/)
 
 ## Installation
 
