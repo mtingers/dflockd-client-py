@@ -162,6 +162,7 @@ class DistributedLock:
         return self.servers[idx % len(self.servers)]
 
     async def acquire(self) -> bool:
+        await self.aclose()
         self._closed = False
         host, port = self._pick_server()
         self._reader, self._writer = await asyncio.open_connection(host, port)
@@ -188,6 +189,7 @@ class DistributedLock:
         Two-phase step 1: connect and enqueue. Returns "acquired" or "queued".
         Starts renew loop on fast-path acquire.
         """
+        await self.aclose()
         self._closed = False
         host, port = self._pick_server()
         self._reader, self._writer = await asyncio.open_connection(host, port)
@@ -242,6 +244,7 @@ class DistributedLock:
         return True
 
     async def __aenter__(self):
+        await self.aclose()
         self._closed = False
         host, port = self._pick_server()
         self._reader, self._writer = await asyncio.open_connection(host, port)
@@ -282,7 +285,7 @@ class DistributedLock:
                         self.key,
                         self.token,
                     )
-                    self.token = None
+                    await self.aclose()
                     return
         except asyncio.CancelledError:
             return
@@ -295,7 +298,8 @@ class DistributedLock:
                     await self._renew_task
 
             if self._reader and self._writer and self.token:
-                await release(self._reader, self._writer, self.key, self.token)
+                with contextlib.suppress(Exception):
+                    await release(self._reader, self._writer, self.key, self.token)
         finally:
             await self.aclose()
 
