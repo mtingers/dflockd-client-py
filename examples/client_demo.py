@@ -36,6 +36,16 @@ async def demo_multi_server():
             print(f"key={lock.key} token={lock.token} lease={lock.lease}")
 
 
+async def demo_timeout():
+    """Launch several workers that all compete for the same lock (FIFO order)
+    but eventually hit ttl timeout."""
+    num_tasks = 2
+    tasks = [demo() for i in range(num_tasks)]
+    print(f"launched {num_tasks} workers with shared lock. gathering...")
+    await asyncio.gather(*tasks)
+    print("all workers finished")
+
+
 if __name__ == "__main__":
     # asyncio.run(demo())
     asyncio.run(demo_lock_ordering())
