@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.0.1] - 2026-02-16
+
+### Fixed
+
+- Close existing connections before opening new ones in `acquire()`, `enqueue()`, and `__aenter__()`, preventing socket leaks on repeated calls
+- Close socket on renew failure instead of only clearing the token, so the connection is properly cleaned up when a lock is lost
+- Suppress `release()` errors in `__aexit__` to avoid masking the original exception from the `async with` block
+- Examples import referenced the old `dflockd` package name instead of `dflockd_client`
+
+### Changed
+
+- Added documentation site link to README
+
+[v1.0.1]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.0.1
+
 ## [v1.0.0] - 2026-02-15
 
 ### Changed
