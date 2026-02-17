@@ -314,3 +314,309 @@ class DistributedLock:
         self._reader = None
         self._writer = None
         self.token = None
+
+
+# ===========================================================================
+# Semaphore protocol functions
+# ===========================================================================
+
+
+async def sem_acquire(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    key: str,
+    acquire_timeout_s: int,
+    limit: int,
+    lease_ttl_s: int | None = None,
+) -> tuple[str, int]:
+    # sl\nkey\n"<timeout> <limit> [<lease>]"\n
+    arg = f"{acquire_timeout_s} {limit}"
+    if lease_ttl_s is not None:
+        arg = f"{arg} {lease_ttl_s}"
+
+    writer.write(_encode_lines("sl", key, arg))
+    await writer.drain()
+
+    resp = await _readline(reader)
+    if resp == "timeout":
+        raise TimeoutError(f"timeout acquiring semaphore {key!r}")
+    if not resp.startswith("ok "):
+        raise RuntimeError(f"sem_acquire failed: {resp!r}")
+
+    parts = resp.split()
+    if len(parts) < 2:
+        raise RuntimeError(f"bad ok response: {resp!r}")
+    token = parts[1]
+    lease = int(parts[2]) if len(parts) >= 3 else 30
+    return token, lease
+
+
+async def sem_renew(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    key: str,
+    token: str,
+    lease_ttl_s: int | None = None,
+) -> int:
+    # sn\nkey\n"<token> [<lease>]"\n
+    arg = token if lease_ttl_s is None else f"{token} {lease_ttl_s}"
+    writer.write(_encode_lines("sn", key, arg))
+    await writer.drain()
+
+    resp = await _readline(reader)
+    if not resp.startswith("ok"):
+        raise RuntimeError(f"sem_renew failed: {resp!r}")
+
+    parts = resp.split()
+    if len(parts) >= 2 and parts[1].isdigit():
+        return int(parts[1])
+    return -1
+
+
+async def sem_enqueue(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    key: str,
+    limit: int,
+    lease_ttl_s: int | None = None,
+) -> tuple[str, str | None, int | None]:
+    """
+    Two-phase enqueue for semaphore: join FIFO queue, return immediately.
+    Returns (status, token, lease) where status is "acquired" or "queued".
+    """
+    arg = str(limit) if lease_ttl_s is None else f"{limit} {lease_ttl_s}"
+    writer.write(_encode_lines("se", key, arg))
+    await writer.drain()
+
+    resp = await _readline(reader)
+    if resp.startswith("acquired "):
+        parts = resp.split()
+        token = parts[1]
+        lease = int(parts[2]) if len(parts) >= 3 else 30
+        return ("acquired", token, lease)
+    if resp == "queued":
+        return ("queued", None, None)
+    raise RuntimeError(f"sem_enqueue failed: {resp!r}")
+
+
+async def sem_wait(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    key: str,
+    wait_timeout_s: int,
+) -> tuple[str, int]:
+    """
+    Two-phase wait for semaphore: block until semaphore slot is granted.
+    Returns (token, lease). Raises TimeoutError on timeout.
+    """
+    writer.write(_encode_lines("sw", key, str(wait_timeout_s)))
+    await writer.drain()
+
+    resp = await _readline(reader)
+    if resp == "timeout":
+        raise TimeoutError(f"timeout waiting for semaphore {key!r}")
+    if not resp.startswith("ok "):
+        raise RuntimeError(f"sem_wait failed: {resp!r}")
+
+    parts = resp.split()
+    token = parts[1]
+    lease = int(parts[2]) if len(parts) >= 3 else 30
+    return token, lease
+
+
+async def sem_release(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, key: str, token: str
+) -> None:
+    writer.write(_encode_lines("sr", key, token))
+    await writer.drain()
+
+    resp = await _readline(reader)
+    if resp != "ok":
+        raise RuntimeError(f"sem_release failed: {resp!r}")
+
+
+# ===========================================================================
+# DistributedSemaphore
+# ===========================================================================
+
+
+@dataclass
+class DistributedSemaphore:
+    key: str
+    limit: int
+    acquire_timeout_s: int = 10
+    lease_ttl_s: int | None = None
+    servers: list[tuple[str, int]] = field(
+        default_factory=lambda: list(DEFAULT_SERVERS)
+    )
+    sharding_strategy: ShardingStrategy = stable_hash_shard
+    renew_ratio: float = 0.5
+
+    _reader: asyncio.StreamReader | None = None
+    _writer: asyncio.StreamWriter | None = None
+    token: str | None = None
+    lease: int = 0
+    _renew_task: asyncio.Task | None = None
+    _closed: bool = False
+
+    def __post_init__(self):
+        if not self.servers:
+            raise ValueError("servers must be a non-empty list")
+
+    def _pick_server(self) -> tuple[str, int]:
+        idx = self.sharding_strategy(self.key, len(self.servers))
+        return self.servers[idx % len(self.servers)]
+
+    async def acquire(self) -> bool:
+        await self.aclose()
+        self._closed = False
+        host, port = self._pick_server()
+        self._reader, self._writer = await asyncio.open_connection(host, port)
+        try:
+            self.token, self.lease = await sem_acquire(
+                self._reader,
+                self._writer,
+                self.key,
+                self.acquire_timeout_s,
+                self.limit,
+                self.lease_ttl_s,
+            )
+        except TimeoutError:
+            await self.aclose()
+            return False
+        except BaseException:
+            await self.aclose()
+            raise
+        self._renew_task = asyncio.create_task(self._renew_loop())
+        return True
+
+    async def enqueue(self) -> str:
+        """
+        Two-phase step 1: connect and enqueue. Returns "acquired" or "queued".
+        Starts renew loop on fast-path acquire.
+        """
+        await self.aclose()
+        self._closed = False
+        host, port = self._pick_server()
+        self._reader, self._writer = await asyncio.open_connection(host, port)
+        try:
+            status, tok, lease = await sem_enqueue(
+                self._reader, self._writer, self.key, self.limit, self.lease_ttl_s
+            )
+        except BaseException:
+            await self.aclose()
+            raise
+        if status == "acquired":
+            self.token = tok
+            self.lease = lease or 0
+            self._renew_task = asyncio.create_task(self._renew_loop())
+        return status
+
+    async def wait(self, timeout_s: int | None = None) -> bool:
+        """
+        Two-phase step 2: wait for semaphore grant. Returns True if granted,
+        False on timeout. If already acquired (fast path from enqueue),
+        returns immediately.
+        """
+        if self.token is not None:
+            return True
+        if self._reader is None or self._writer is None:
+            raise RuntimeError("not connected; call enqueue() first")
+        timeout = timeout_s if timeout_s is not None else self.acquire_timeout_s
+        try:
+            self.token, self.lease = await sem_wait(
+                self._reader, self._writer, self.key, timeout
+            )
+        except TimeoutError:
+            await self.aclose()
+            return False
+        except BaseException:
+            await self.aclose()
+            raise
+        self._renew_task = asyncio.create_task(self._renew_loop())
+        return True
+
+    async def release(self) -> bool:
+        try:
+            if self._renew_task:
+                self._renew_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await self._renew_task
+
+            if self._reader and self._writer and self.token:
+                await sem_release(self._reader, self._writer, self.key, self.token)
+        finally:
+            await self.aclose()
+        return True
+
+    async def __aenter__(self):
+        await self.aclose()
+        self._closed = False
+        host, port = self._pick_server()
+        self._reader, self._writer = await asyncio.open_connection(host, port)
+        try:
+            self.token, self.lease = await sem_acquire(
+                self._reader,
+                self._writer,
+                self.key,
+                self.acquire_timeout_s,
+                self.limit,
+                self.lease_ttl_s,
+            )
+        except BaseException:
+            await self.aclose()
+            raise
+        self._renew_task = asyncio.create_task(self._renew_loop())
+        return self
+
+    async def _renew_loop(self):
+        assert self._reader and self._writer and self.token
+        interval = max(1.0, self.lease * self.renew_ratio)
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await sem_renew(
+                        self._reader,
+                        self._writer,
+                        self.key,
+                        self.token,
+                        self.lease_ttl_s,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.error(
+                        "semaphore lost (renew failed): key=%s token=%s",
+                        self.key,
+                        self.token,
+                    )
+                    await self.aclose()
+                    return
+        except asyncio.CancelledError:
+            return
+
+    async def __aexit__(self, exc_type, exc, tb):
+        try:
+            if self._renew_task:
+                self._renew_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await self._renew_task
+
+            if self._reader and self._writer and self.token:
+                with contextlib.suppress(Exception):
+                    await sem_release(self._reader, self._writer, self.key, self.token)
+        finally:
+            await self.aclose()
+
+    async def aclose(self):
+        if self._closed:
+            return
+        self._closed = True
+        if self._writer:
+            self._writer.close()
+            with contextlib.suppress(Exception):
+                await self._writer.wait_closed()
+        self._reader = None
+        self._writer = None
+        self.token = None

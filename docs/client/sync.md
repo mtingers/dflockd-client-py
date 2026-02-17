@@ -1,9 +1,9 @@
 # Sync Client
 
-The sync client uses standard `socket` and `threading` for blocking lock operations with automatic background lease renewal. No asyncio required.
+The sync client uses standard `socket` and `threading` for blocking lock and semaphore operations with automatic background lease renewal. No asyncio required.
 
 ```python
-from dflockd_client.sync_client import DistributedLock
+from dflockd_client.sync_client import DistributedLock, DistributedSemaphore
 ```
 
 ## Context manager
@@ -132,6 +132,75 @@ if status == "queued":
     token, lease = wait(sock, rfile, "my-key", wait_timeout_s=10)
 
 release(sock, rfile, "my-key", token)
+
+rfile.close()
+sock.close()
+```
+
+## Semaphores
+
+`DistributedSemaphore` allows up to N concurrent holders on the same key. It has the same API as `DistributedLock` plus a required `limit` parameter.
+
+### Context manager
+
+```python
+from dflockd_client.sync_client import DistributedSemaphore
+
+with DistributedSemaphore("my-key", limit=3, acquire_timeout_s=10) as sem:
+    print(f"token={sem.token} lease={sem.lease}")
+    # up to 3 holders at once
+```
+
+### Manual acquire/release
+
+```python
+sem = DistributedSemaphore("my-key", limit=3, acquire_timeout_s=10)
+if sem.acquire():
+    try:
+        pass  # critical section
+    finally:
+        sem.release()
+```
+
+### Two-phase semaphore acquisition
+
+```python
+sem = DistributedSemaphore("my-key", limit=3, acquire_timeout_s=10)
+
+status = sem.enqueue()  # "acquired" or "queued"
+notify_external_system(status)
+
+if sem.wait(timeout_s=10):
+    try:
+        pass  # critical section
+    finally:
+        sem.release()
+```
+
+### Semaphore parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `key` | `str` | *(required)* | Semaphore name |
+| `limit` | `int` | *(required)* | Maximum concurrent holders |
+| `acquire_timeout_s` | `int` | `10` | Seconds to wait for acquisition |
+| `lease_ttl_s` | `int \| None` | `None` | Lease duration (seconds). `None` uses server default |
+| `servers` | `list[tuple[str, int]]` | `[("127.0.0.1", 6388)]` | Server addresses |
+| `sharding_strategy` | `ShardingStrategy` | `stable_hash_shard` | Key-to-server mapping function |
+| `renew_ratio` | `float` | `0.5` | Renew at `lease * ratio` seconds |
+
+### Semaphore low-level functions
+
+```python
+import socket
+from dflockd_client.sync_client import sem_acquire, sem_release, sem_renew
+
+sock = socket.create_connection(("127.0.0.1", 6388))
+rfile = sock.makefile("r", encoding="utf-8")
+
+token, lease = sem_acquire(sock, rfile, "my-key", acquire_timeout_s=10, limit=3)
+remaining = sem_renew(sock, rfile, "my-key", token)
+sem_release(sock, rfile, "my-key", token)
 
 rfile.close()
 sock.close()

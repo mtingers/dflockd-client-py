@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0] - 2026-02-16
+
+### Added
+
+- `DistributedSemaphore` class in both async and sync clients, allowing up to N concurrent holders per key
+- Semaphore protocol functions (`sem_acquire`, `sem_release`, `sem_renew`, `sem_enqueue`, `sem_wait`) in both async and sync clients
+- Two-phase semaphore acquisition via `DistributedSemaphore.enqueue()` and `DistributedSemaphore.wait()`
+- Semaphore integration and unit tests mirroring existing lock test structure
+- Documentation for semaphores in README, API reference, client guides, quickstart, examples, and architecture docs
+
+[v1.1.0]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.1.0
+
 ## [v1.0.1] - 2026-02-16
 
 ### Fixed

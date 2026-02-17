@@ -10,6 +10,8 @@
     - [Manual acquire/release](#manual-acquirerelease)
     - [Two-phase lock acquisition](#two-phase-lock-acquisition)
     - [Parameters](#parameters)
+  - [Semaphores](#semaphores)
+    - [Parameters](#parameters-1)
   - [Multi-server sharding](#multi-server-sharding)
           <!--toc:end-->
 
@@ -108,6 +110,42 @@ if await lock.wait(timeout_s=10):
 | ------------------- | ----------------------- | ----------------------------------------------------------------------- |
 | `key`               | _(required)_            | Lock name                                                               |
 | `acquire_timeout_s` | `10`                    | Seconds to wait for lock acquisition                                    |
+| `lease_ttl_s`       | `None` (server default) | Lease duration in seconds                                               |
+| `servers`           | `[("127.0.0.1", 6388)]` | List of `(host, port)` tuples                                           |
+| `sharding_strategy` | `stable_hash_shard`     | `Callable[[str, int], int]` — maps `(key, num_servers)` to server index |
+| `renew_ratio`       | `0.5`                   | Renew at `lease * ratio` seconds                                        |
+
+## Semaphores
+
+`DistributedSemaphore` allows up to N concurrent holders per key, using the same API patterns as `DistributedLock`:
+
+```python
+from dflockd_client.sync_client import DistributedSemaphore
+
+# Allow up to 3 concurrent workers on this key
+with DistributedSemaphore("my-key", limit=3, acquire_timeout_s=10) as sem:
+    print(sem.token, sem.lease)
+    # critical section — up to 3 holders at once
+```
+
+Async equivalent:
+
+```python
+from dflockd_client.client import DistributedSemaphore
+
+async with DistributedSemaphore("my-key", limit=3, acquire_timeout_s=10) as sem:
+    print(sem.token, sem.lease)
+```
+
+Manual acquire/release and two-phase (`enqueue()` / `wait()`) work the same as locks.
+
+### Parameters
+
+| Parameter           | Default                 | Description                                                             |
+| ------------------- | ----------------------- | ----------------------------------------------------------------------- |
+| `key`               | _(required)_            | Semaphore name                                                          |
+| `limit`             | _(required)_            | Maximum concurrent holders                                              |
+| `acquire_timeout_s` | `10`                    | Seconds to wait for acquisition                                         |
 | `lease_ttl_s`       | `None` (server default) | Lease duration in seconds                                               |
 | `servers`           | `[("127.0.0.1", 6388)]` | List of `(host, port)` tuples                                           |
 | `sharding_strategy` | `stable_hash_shard`     | `Callable[[str, int], int]` — maps `(key, num_servers)` to server index |

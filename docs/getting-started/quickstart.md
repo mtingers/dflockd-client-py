@@ -45,6 +45,34 @@ if lock.acquire():
         lock.release()
 ```
 
+## Acquire a semaphore
+
+Semaphores allow up to N concurrent holders on the same key.
+
+### Async client
+
+```python
+import asyncio
+from dflockd_client.client import DistributedSemaphore
+
+async def main():
+    async with DistributedSemaphore("my-key", limit=3, acquire_timeout_s=10) as sem:
+        print(f"token={sem.token} lease={sem.lease}")
+        # up to 3 holders at once
+
+asyncio.run(main())
+```
+
+### Sync client
+
+```python
+from dflockd_client.sync_client import DistributedSemaphore
+
+with DistributedSemaphore("my-key", limit=3, acquire_timeout_s=10) as sem:
+    print(f"token={sem.token} lease={sem.lease}")
+    # up to 3 holders at once
+```
+
 ## What happens under the hood
 
 1. The client opens a TCP connection to the server (selected via sharding if multiple servers are configured).

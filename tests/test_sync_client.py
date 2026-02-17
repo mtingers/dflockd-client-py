@@ -616,6 +616,376 @@ class TestSyncTwoPhase:
 
 
 # ===========================================================================
+# Semaphore — unit tests (no server needed)
+# ===========================================================================
+
+
+class TestDistributedSemaphoreDefaults:
+    def test_default_fields(self):
+        sem = sc.DistributedSemaphore(key="mykey", limit=3)
+        assert sem.key == "mykey"
+        assert sem.limit == 3
+        assert sem.acquire_timeout_s == 10
+        assert sem.lease_ttl_s is None
+        assert sem.servers == [("127.0.0.1", 6388)]
+        assert sem.renew_ratio == 0.5
+        assert sem.token is None
+        assert sem.lease == 0
+        assert sem._closed is False
+
+    def test_close_idempotent(self):
+        sem = sc.DistributedSemaphore(key="k", limit=2)
+        sem.close()
+        sem.close()  # second call should be a no-op
+
+
+# ===========================================================================
+# Semaphore — integration tests: low-level functions
+# ===========================================================================
+
+
+class TestSemAcquireRelease:
+    async def test_basic_cycle(self, server_port):
+        def _work():
+            sock, rfile = _connect(server_port)
+            try:
+                token, lease = sc.sem_acquire(sock, rfile, "s1", 5, 2)
+                assert isinstance(token, str) and len(token) > 0
+                assert lease > 0
+                sc.sem_release(sock, rfile, "s1", token)
+            finally:
+                _close(sock, rfile)
+
+        await asyncio.to_thread(_work)
+
+    async def test_acquire_timeout(self, server_port):
+        """Semaphore with limit=1 should timeout on second acquire."""
+
+        def _work():
+            s1, r1 = _connect(server_port)
+            s2, r2 = _connect(server_port)
+            try:
+                sc.sem_acquire(s1, r1, "s1", 5, 1)
+                with pytest.raises(TimeoutError):
+                    sc.sem_acquire(s2, r2, "s1", 0, 1)
+            finally:
+                _close(s1, r1)
+                _close(s2, r2)
+
+        await asyncio.to_thread(_work)
+
+    async def test_release_bad_token(self, server_port):
+        def _work():
+            sock, rfile = _connect(server_port)
+            try:
+                sc.sem_acquire(sock, rfile, "s1", 5, 2)
+                with pytest.raises(RuntimeError, match="sem_release failed"):
+                    sc.sem_release(sock, rfile, "s1", "badtoken")
+            finally:
+                _close(sock, rfile)
+
+        await asyncio.to_thread(_work)
+
+
+class TestSemRenew:
+    async def test_renew_returns_remaining(self, server_port):
+        def _work():
+            sock, rfile = _connect(server_port)
+            try:
+                token, _ = sc.sem_acquire(sock, rfile, "s1", 5, 2, lease_ttl_s=10)
+                remaining = sc.sem_renew(sock, rfile, "s1", token, lease_ttl_s=20)
+                assert remaining >= 0
+            finally:
+                _close(sock, rfile)
+
+        await asyncio.to_thread(_work)
+
+    async def test_renew_bad_token(self, server_port):
+        def _work():
+            sock, rfile = _connect(server_port)
+            try:
+                sc.sem_acquire(sock, rfile, "s1", 5, 2)
+                with pytest.raises(RuntimeError, match="sem_renew failed"):
+                    sc.sem_renew(sock, rfile, "s1", "badtoken")
+            finally:
+                _close(sock, rfile)
+
+        await asyncio.to_thread(_work)
+
+
+# ===========================================================================
+# DistributedSemaphore — context manager
+# ===========================================================================
+
+
+class TestDistributedSemaphoreContextManager:
+    async def test_basic_lifecycle(self, server_port):
+        def _work():
+            sem = sc.DistributedSemaphore(
+                key="s1",
+                limit=2,
+                acquire_timeout_s=5,
+                servers=[("127.0.0.1", server_port)],
+            )
+            with sem as s:
+                assert s is sem
+                assert s.token is not None
+                assert s.lease > 0
+            assert sem.token is None
+
+        await asyncio.to_thread(_work)
+
+    async def test_exception_inside_context(self, server_port):
+        def _work():
+            sem = sc.DistributedSemaphore(
+                key="s1",
+                limit=2,
+                acquire_timeout_s=5,
+                servers=[("127.0.0.1", server_port)],
+            )
+            with pytest.raises(ValueError, match="boom"):
+                with sem:
+                    assert sem.token is not None
+                    raise ValueError("boom")
+            assert sem.token is None
+            assert sem._closed is True
+
+        await asyncio.to_thread(_work)
+
+    async def test_reuse_after_exit(self, server_port):
+        def _work():
+            sem = sc.DistributedSemaphore(
+                key="s1",
+                limit=2,
+                acquire_timeout_s=5,
+                servers=[("127.0.0.1", server_port)],
+            )
+            with sem:
+                token1 = sem.token
+            with sem:
+                token2 = sem.token
+            assert token1 != token2
+
+        await asyncio.to_thread(_work)
+
+
+# ===========================================================================
+# DistributedSemaphore — acquire() / release() methods
+# ===========================================================================
+
+
+class TestDistributedSemaphoreMethods:
+    async def test_acquire_release(self, server_port):
+        def _work():
+            sem = sc.DistributedSemaphore(
+                key="s1",
+                limit=2,
+                acquire_timeout_s=5,
+                servers=[("127.0.0.1", server_port)],
+            )
+            ok = sem.acquire()
+            assert ok is True
+            assert sem.token is not None
+            ok = sem.release()
+            assert ok is True
+            assert sem.token is None
+
+        await asyncio.to_thread(_work)
+
+    async def test_acquire_timeout_returns_false(self, server_port):
+        def _work():
+            sem1 = sc.DistributedSemaphore(
+                key="s1",
+                limit=1,
+                acquire_timeout_s=5,
+                lease_ttl_s=30,
+                servers=[("127.0.0.1", server_port)],
+            )
+            sem2 = sc.DistributedSemaphore(
+                key="s1",
+                limit=1,
+                acquire_timeout_s=0,
+                lease_ttl_s=30,
+                servers=[("127.0.0.1", server_port)],
+            )
+            sem1.acquire()
+            try:
+                ok = sem2.acquire()
+                assert ok is False
+                assert sem2.token is None
+            finally:
+                sem1.release()
+
+        await asyncio.to_thread(_work)
+
+
+# ===========================================================================
+# Semaphore mutual exclusion (concurrency limit)
+# ===========================================================================
+
+
+class TestSemMutualExclusion:
+    async def test_limit_allows_n_blocks_n_plus_1(self, server_port):
+        """Semaphore with limit=2 allows 2 concurrent holders but blocks a 3rd."""
+        results: list[tuple[int, str]] = []
+        results_lock = threading.Lock()
+
+        def _worker(n: int, timeout: int):
+            sem = sc.DistributedSemaphore(
+                key="sem_mutex",
+                limit=2,
+                acquire_timeout_s=timeout,
+                lease_ttl_s=5,
+                servers=[("127.0.0.1", server_port)],
+            )
+            with sem:
+                with results_lock:
+                    results.append((n, "enter"))
+                time.sleep(0.15)
+                with results_lock:
+                    results.append((n, "exit"))
+
+        def _run():
+            t1 = threading.Thread(target=_worker, args=(1, 5))
+            t2 = threading.Thread(target=_worker, args=(2, 5))
+            t3 = threading.Thread(target=_worker, args=(3, 5))
+            t1.start()
+            t2.start()
+            time.sleep(0.05)  # let t1 and t2 acquire
+            t3.start()
+            t1.join(timeout=15)
+            t2.join(timeout=15)
+            t3.join(timeout=15)
+
+        await asyncio.to_thread(_run)
+
+        # Workers 1 and 2 should both enter before either exits
+        # Worker 3 should enter only after one of them exits
+        enter_order = [r[0] for r in results if r[1] == "enter"]
+        assert len(enter_order) == 3
+        # First two entered concurrently
+        assert set(enter_order[:2]) == {1, 2}
+        # Third entered after at least one exit
+        first_exit_idx = next(i for i, r in enumerate(results) if r[1] == "exit")
+        third_enter_idx = next(i for i, r in enumerate(results) if r == (3, "enter"))
+        assert third_enter_idx > first_exit_idx
+
+
+# ===========================================================================
+# Sync semaphore two-phase: enqueue + wait
+# ===========================================================================
+
+
+class TestSyncSemTwoPhase:
+    async def test_low_level_enqueue_wait_release(self, server_port):
+        def _work():
+            sock, rfile = _connect(server_port)
+            try:
+                status, token, lease = sc.sem_enqueue(sock, rfile, "s1", 2)
+                assert status == "acquired"
+                assert token is not None
+                assert lease > 0
+
+                tok, ttl = sc.sem_wait(sock, rfile, "s1", 5)
+                assert tok == token
+
+                sc.sem_release(sock, rfile, "s1", tok)
+            finally:
+                _close(sock, rfile)
+
+        await asyncio.to_thread(_work)
+
+    async def test_queued_then_wait(self, server_port):
+        """conn1 holds (limit=1), conn2 enqueues (queued), conn1 releases, conn2 waits."""
+
+        def _work():
+            s1, r1 = _connect(server_port)
+            s2, r2 = _connect(server_port)
+            try:
+                tok1, _ = sc.sem_acquire(s1, r1, "s1", 5, 1)
+
+                status, _, _ = sc.sem_enqueue(s2, r2, "s1", 1)
+                assert status == "queued"
+
+                def _release():
+                    time.sleep(0.1)
+                    sc.sem_release(s1, r1, "s1", tok1)
+
+                t = threading.Thread(target=_release)
+                t.start()
+                tok2, lease2 = sc.sem_wait(s2, r2, "s1", 5)
+                t.join()
+
+                assert tok2 is not None
+                assert lease2 > 0
+                sc.sem_release(s2, r2, "s1", tok2)
+            finally:
+                _close(s1, r1)
+                _close(s2, r2)
+
+        await asyncio.to_thread(_work)
+
+    async def test_distributed_semaphore_two_phase(self, server_port):
+        def _work():
+            sem = sc.DistributedSemaphore(
+                key="s1",
+                limit=2,
+                acquire_timeout_s=5,
+                lease_ttl_s=5,
+                servers=[("127.0.0.1", server_port)],
+            )
+            status = sem.enqueue()
+            assert status == "acquired"
+            assert sem.token is not None
+
+            ok = sem.wait()
+            assert ok is True
+
+            sem.release()
+            assert sem.token is None
+
+        await asyncio.to_thread(_work)
+
+    async def test_distributed_semaphore_two_phase_contention(self, server_port):
+        """sem1 holds (limit=1), sem2 enqueues+waits, sem1 releases -> sem2 gets it."""
+
+        def _work():
+            sem1 = sc.DistributedSemaphore(
+                key="s1",
+                limit=1,
+                acquire_timeout_s=5,
+                lease_ttl_s=5,
+                servers=[("127.0.0.1", server_port)],
+            )
+            sem2 = sc.DistributedSemaphore(
+                key="s1",
+                limit=1,
+                acquire_timeout_s=5,
+                lease_ttl_s=5,
+                servers=[("127.0.0.1", server_port)],
+            )
+
+            sem1.acquire()
+            status = sem2.enqueue()
+            assert status == "queued"
+
+            def _release():
+                time.sleep(0.1)
+                sem1.release()
+
+            t = threading.Thread(target=_release)
+            t.start()
+            ok = sem2.wait()
+            t.join()
+
+            assert ok is True
+            assert sem2.token is not None
+            sem2.release()
+
+        await asyncio.to_thread(_work)
+
+
+# ===========================================================================
 # Sharding
 # ===========================================================================
 

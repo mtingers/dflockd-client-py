@@ -103,6 +103,106 @@ async def wait(
 
 Two-phase step 2: block until lock is granted. Returns `(token, lease)`. Raises `TimeoutError` on timeout.
 
+### DistributedSemaphore
+
+```python
+@dataclass
+class DistributedSemaphore:
+    key: str
+    limit: int
+    acquire_timeout_s: int = 10
+    lease_ttl_s: int | None = None
+    servers: list[tuple[str, int]] = [("127.0.0.1", 6388)]
+    sharding_strategy: ShardingStrategy = stable_hash_shard
+    renew_ratio: float = 0.5
+```
+
+**Methods:**
+
+| Method | Returns | Description |
+|---|---|---|
+| `await acquire()` | `bool` | Acquire a semaphore slot. Returns `False` on timeout |
+| `await enqueue()` | `str` | Two-phase step 1: join queue. Returns `"acquired"` or `"queued"` |
+| `await wait(timeout_s=None)` | `bool` | Two-phase step 2: block until granted. Returns `False` on timeout |
+| `await release()` | `bool` | Release the slot and stop renewal |
+| `await aclose()` | `None` | Close the connection and clean up |
+
+**Context manager:**
+
+```python
+async with DistributedSemaphore("key", limit=3) as sem:
+    ...  # sem.token, sem.lease available
+```
+
+Raises `TimeoutError` if a slot cannot be acquired.
+
+### Semaphore low-level functions
+
+#### sem_acquire
+
+```python
+async def sem_acquire(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    key: str,
+    acquire_timeout_s: int,
+    limit: int,
+    lease_ttl_s: int | None = None,
+) -> tuple[str, int]
+```
+
+Send a semaphore acquire request. Returns `(token, lease_ttl)`. Raises `TimeoutError` on timeout, `RuntimeError` on errors (including `error_limit_mismatch`).
+
+#### sem_release
+
+```python
+async def sem_release(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    key: str,
+    token: str,
+) -> None
+```
+
+#### sem_renew
+
+```python
+async def sem_renew(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    key: str,
+    token: str,
+    lease_ttl_s: int | None = None,
+) -> int
+```
+
+#### sem_enqueue
+
+```python
+async def sem_enqueue(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    key: str,
+    limit: int,
+    lease_ttl_s: int | None = None,
+) -> tuple[str, str | None, int | None]
+```
+
+Two-phase step 1: join the semaphore FIFO queue. Returns `(status, token, lease)` where status is `"acquired"` or `"queued"`.
+
+#### sem_wait
+
+```python
+async def sem_wait(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    key: str,
+    wait_timeout_s: int,
+) -> tuple[str, int]
+```
+
+Two-phase step 2: block until a semaphore slot is granted. Returns `(token, lease)`. Raises `TimeoutError` on timeout.
+
 ---
 
 ## dflockd_client.sync_client
@@ -199,6 +299,102 @@ def wait(
 ```
 
 Two-phase step 2: block until lock is granted. Returns `(token, lease)`. Raises `TimeoutError` on timeout.
+
+### DistributedSemaphore
+
+```python
+@dataclass
+class DistributedSemaphore:
+    key: str
+    limit: int
+    acquire_timeout_s: int = 10
+    lease_ttl_s: int | None = None
+    servers: list[tuple[str, int]] = [("127.0.0.1", 6388)]
+    sharding_strategy: ShardingStrategy = stable_hash_shard
+    renew_ratio: float = 0.5
+```
+
+**Methods:**
+
+| Method | Returns | Description |
+|---|---|---|
+| `acquire()` | `bool` | Acquire a semaphore slot. Returns `False` on timeout |
+| `enqueue()` | `str` | Two-phase step 1: join queue. Returns `"acquired"` or `"queued"` |
+| `wait(timeout_s=None)` | `bool` | Two-phase step 2: block until granted. Returns `False` on timeout |
+| `release()` | `bool` | Release the slot and stop renewal |
+| `close()` | `None` | Close the connection and clean up |
+
+**Context manager:**
+
+```python
+with DistributedSemaphore("key", limit=3) as sem:
+    ...  # sem.token, sem.lease available
+```
+
+### Semaphore low-level functions
+
+#### sem_acquire
+
+```python
+def sem_acquire(
+    sock: socket.socket,
+    rfile: io.TextIOWrapper,
+    key: str,
+    acquire_timeout_s: int,
+    limit: int,
+    lease_ttl_s: int | None = None,
+) -> tuple[str, int]
+```
+
+#### sem_release
+
+```python
+def sem_release(
+    sock: socket.socket,
+    rfile: io.TextIOWrapper,
+    key: str,
+    token: str,
+) -> None
+```
+
+#### sem_renew
+
+```python
+def sem_renew(
+    sock: socket.socket,
+    rfile: io.TextIOWrapper,
+    key: str,
+    token: str,
+    lease_ttl_s: int | None = None,
+) -> int
+```
+
+#### sem_enqueue
+
+```python
+def sem_enqueue(
+    sock: socket.socket,
+    rfile: io.TextIOWrapper,
+    key: str,
+    limit: int,
+    lease_ttl_s: int | None = None,
+) -> tuple[str, str | None, int | None]
+```
+
+Two-phase step 1: join the semaphore FIFO queue. Returns `(status, token, lease)` where status is `"acquired"` or `"queued"`.
+
+#### sem_wait
+
+```python
+def sem_wait(
+    sock: socket.socket,
+    rfile: io.TextIOWrapper,
+    key: str,
+    wait_timeout_s: int,
+) -> tuple[str, int]
+```
+
+Two-phase step 2: block until a semaphore slot is granted. Returns `(token, lease)`. Raises `TimeoutError` on timeout.
 
 ---
 

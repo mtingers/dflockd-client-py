@@ -2,7 +2,7 @@
 
 ## Overview
 
-The dflockd-client library provides async and sync Python clients for [dflockd](https://github.com/mtingers/dflockd), a distributed lock server. Both clients communicate with the server over TCP using a line-based UTF-8 protocol.
+The dflockd-client library provides async and sync Python clients for [dflockd](https://github.com/mtingers/dflockd), a distributed lock and semaphore server. Both clients communicate with the server over TCP using a line-based UTF-8 protocol.
 
 ```
 ┌─────────────────────────────────┐
@@ -30,18 +30,22 @@ The dflockd-client library provides async and sync Python clients for [dflockd](
 
 When `acquire()` or `enqueue()` is called, the client:
 
-1. Selects a server using the sharding strategy (based on the lock key).
+1. Selects a server using the sharding strategy (based on the key).
 2. Opens a TCP connection to that server.
-3. Sends the lock request over the wire.
+3. Sends the lock or semaphore request over the wire.
 
 ### Lock acquisition
 
 - **Single-phase (`acquire`)** — sends a lock request with a timeout. The server grants the lock immediately if free, or enqueues the client in FIFO order. The call blocks until the lock is granted or the timeout expires.
 - **Two-phase (`enqueue` + `wait`)** — splits acquisition into two steps. `enqueue()` joins the queue and returns immediately with `"acquired"` or `"queued"`. `wait()` blocks until the lock is granted. This allows application logic (e.g. notifying an external system) between joining the queue and blocking.
 
+### Semaphore acquisition
+
+Semaphores follow the same lifecycle as locks but allow up to N concurrent holders per key (controlled by the `limit` parameter). The protocol uses `sl`/`se`/`sw`/`sr`/`sn` commands instead of `l`/`e`/`w`/`r`/`n`. Both `DistributedLock` and `DistributedSemaphore` support single-phase and two-phase acquisition.
+
 ### Background renewal
 
-Once a lock is acquired, the client starts a background renewal loop:
+Once a lock or semaphore is acquired, the client starts a background renewal loop:
 
 - **Async client** — an `asyncio.Task` that sends renew requests at `lease * renew_ratio` intervals.
 - **Sync client** — a daemon `threading.Thread` that does the same.
