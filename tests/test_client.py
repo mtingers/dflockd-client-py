@@ -431,9 +431,9 @@ class TestAsyncSemAcquireRelease:
         r1, w1 = await _open(server_port)
         r2, w2 = await _open(server_port)
         try:
-            await aclient.sem_acquire(r1, w1, "s1", 5, 1)
+            await aclient.sem_acquire(r1, w1, "s1_lim1", 5, 1)
             with pytest.raises(TimeoutError):
-                await aclient.sem_acquire(r2, w2, "s1", 0, 1)
+                await aclient.sem_acquire(r2, w2, "s1_lim1", 0, 1)
         finally:
             w1.close()
             w2.close()
@@ -577,22 +577,22 @@ class TestAsyncSemTwoPhase:
         r1, w1 = await _open(server_port)
         r2, w2 = await _open(server_port)
         try:
-            tok1, _ = await aclient.sem_acquire(r1, w1, "s1", 5, 1)
+            tok1, _ = await aclient.sem_acquire(r1, w1, "s1_queue", 5, 1)
 
-            status, _, _ = await aclient.sem_enqueue(r2, w2, "s1", 1)
+            status, _, _ = await aclient.sem_enqueue(r2, w2, "s1_queue", 1)
             assert status == "queued"
 
             async def _release_soon():
                 await asyncio.sleep(0.1)
-                await aclient.sem_release(r1, w1, "s1", tok1)
+                await aclient.sem_release(r1, w1, "s1_queue", tok1)
 
             release_task = asyncio.create_task(_release_soon())
-            tok2, lease2 = await aclient.sem_wait(r2, w2, "s1", 5)
+            tok2, lease2 = await aclient.sem_wait(r2, w2, "s1_queue", 5)
             await release_task
 
             assert tok2 is not None
             assert lease2 > 0
-            await aclient.sem_release(r2, w2, "s1", tok2)
+            await aclient.sem_release(r2, w2, "s1_queue", tok2)
         finally:
             w1.close()
             w2.close()
@@ -620,14 +620,14 @@ class TestAsyncSemTwoPhase:
     async def test_distributed_semaphore_two_phase_contention(self, server_port):
         """sem1 holds (limit=1), sem2 enqueues+waits."""
         sem1 = aclient.DistributedSemaphore(
-            key="s1",
+            key="s1_2phase",
             limit=1,
             acquire_timeout_s=5,
             lease_ttl_s=5,
             servers=[("127.0.0.1", server_port)],
         )
         sem2 = aclient.DistributedSemaphore(
-            key="s1",
+            key="s1_2phase",
             limit=1,
             acquire_timeout_s=5,
             lease_ttl_s=5,

@@ -665,9 +665,9 @@ class TestSemAcquireRelease:
             s1, r1 = _connect(server_port)
             s2, r2 = _connect(server_port)
             try:
-                sc.sem_acquire(s1, r1, "s1", 5, 1)
+                sc.sem_acquire(s1, r1, "s1_lim1", 5, 1)
                 with pytest.raises(TimeoutError):
-                    sc.sem_acquire(s2, r2, "s1", 0, 1)
+                    sc.sem_acquire(s2, r2, "s1_lim1", 0, 1)
             finally:
                 _close(s1, r1)
                 _close(s2, r2)
@@ -795,14 +795,14 @@ class TestDistributedSemaphoreMethods:
     async def test_acquire_timeout_returns_false(self, server_port):
         def _work():
             sem1 = sc.DistributedSemaphore(
-                key="s1",
+                key="s1_lim1",
                 limit=1,
                 acquire_timeout_s=5,
                 lease_ttl_s=30,
                 servers=[("127.0.0.1", server_port)],
             )
             sem2 = sc.DistributedSemaphore(
-                key="s1",
+                key="s1_lim1",
                 limit=1,
                 acquire_timeout_s=0,
                 lease_ttl_s=30,
@@ -902,23 +902,23 @@ class TestSyncSemTwoPhase:
             s1, r1 = _connect(server_port)
             s2, r2 = _connect(server_port)
             try:
-                tok1, _ = sc.sem_acquire(s1, r1, "s1", 5, 1)
+                tok1, _ = sc.sem_acquire(s1, r1, "s1_queue", 5, 1)
 
-                status, _, _ = sc.sem_enqueue(s2, r2, "s1", 1)
+                status, _, _ = sc.sem_enqueue(s2, r2, "s1_queue", 1)
                 assert status == "queued"
 
                 def _release():
                     time.sleep(0.1)
-                    sc.sem_release(s1, r1, "s1", tok1)
+                    sc.sem_release(s1, r1, "s1_queue", tok1)
 
                 t = threading.Thread(target=_release)
                 t.start()
-                tok2, lease2 = sc.sem_wait(s2, r2, "s1", 5)
+                tok2, lease2 = sc.sem_wait(s2, r2, "s1_queue", 5)
                 t.join()
 
                 assert tok2 is not None
                 assert lease2 > 0
-                sc.sem_release(s2, r2, "s1", tok2)
+                sc.sem_release(s2, r2, "s1_queue", tok2)
             finally:
                 _close(s1, r1)
                 _close(s2, r2)
@@ -951,14 +951,14 @@ class TestSyncSemTwoPhase:
 
         def _work():
             sem1 = sc.DistributedSemaphore(
-                key="s1",
+                key="s1_2phase",
                 limit=1,
                 acquire_timeout_s=5,
                 lease_ttl_s=5,
                 servers=[("127.0.0.1", server_port)],
             )
             sem2 = sc.DistributedSemaphore(
-                key="s1",
+                key="s1_2phase",
                 limit=1,
                 acquire_timeout_s=5,
                 lease_ttl_s=5,
