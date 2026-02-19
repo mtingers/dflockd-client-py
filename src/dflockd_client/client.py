@@ -178,20 +178,23 @@ class DistributedLock:
         idx = self.sharding_strategy(self.key, len(self.servers))
         return self.servers[idx % len(self.servers)]
 
-    async def _connect(self):
+    async def _connect(
+        self,
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         await self.aclose()
         self._closed = False
         host, port = self._pick_server()
         self._reader, self._writer = await asyncio.open_connection(
             host, port, ssl=self.ssl_context
         )
+        return self._reader, self._writer
 
     async def acquire(self) -> bool:
-        await self._connect()
+        reader, writer = await self._connect()
         try:
             self.token, self.lease = await acquire(
-                self._reader,
-                self._writer,
+                reader,
+                writer,
                 self.key,
                 self.acquire_timeout_s,
                 self.lease_ttl_s,
@@ -211,10 +214,10 @@ class DistributedLock:
         Two-phase step 1: connect and enqueue. Returns "acquired" or "queued".
         Starts renew loop on fast-path acquire.
         """
-        await self._connect()
+        reader, writer = await self._connect()
         try:
             status, tok, lease = await enqueue(
-                self._reader, self._writer, self.key, self.lease_ttl_s
+                reader, writer, self.key, self.lease_ttl_s
             )
         except BaseException:
             await self.aclose()
@@ -263,11 +266,11 @@ class DistributedLock:
         return True
 
     async def __aenter__(self):
-        await self._connect()
+        reader, writer = await self._connect()
         try:
             self.token, self.lease = await acquire(
-                self._reader,
-                self._writer,
+                reader,
+                writer,
                 self.key,
                 self.acquire_timeout_s,
                 self.lease_ttl_s,
@@ -484,20 +487,23 @@ class DistributedSemaphore:
         idx = self.sharding_strategy(self.key, len(self.servers))
         return self.servers[idx % len(self.servers)]
 
-    async def _connect(self):
+    async def _connect(
+        self,
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         await self.aclose()
         self._closed = False
         host, port = self._pick_server()
         self._reader, self._writer = await asyncio.open_connection(
             host, port, ssl=self.ssl_context
         )
+        return self._reader, self._writer
 
     async def acquire(self) -> bool:
-        await self._connect()
+        reader, writer = await self._connect()
         try:
             self.token, self.lease = await sem_acquire(
-                self._reader,
-                self._writer,
+                reader,
+                writer,
                 self.key,
                 self.acquire_timeout_s,
                 self.limit,
@@ -517,10 +523,10 @@ class DistributedSemaphore:
         Two-phase step 1: connect and enqueue. Returns "acquired" or "queued".
         Starts renew loop on fast-path acquire.
         """
-        await self._connect()
+        reader, writer = await self._connect()
         try:
             status, tok, lease = await sem_enqueue(
-                self._reader, self._writer, self.key, self.limit, self.lease_ttl_s
+                reader, writer, self.key, self.limit, self.lease_ttl_s
             )
         except BaseException:
             await self.aclose()
@@ -569,11 +575,11 @@ class DistributedSemaphore:
         return True
 
     async def __aenter__(self):
-        await self._connect()
+        reader, writer = await self._connect()
         try:
             self.token, self.lease = await sem_acquire(
-                self._reader,
-                self._writer,
+                reader,
+                writer,
                 self.key,
                 self.acquire_timeout_s,
                 self.limit,
