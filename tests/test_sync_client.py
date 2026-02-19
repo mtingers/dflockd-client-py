@@ -990,6 +990,64 @@ class TestSyncSemTwoPhase:
 # ===========================================================================
 
 
+# ===========================================================================
+# Stats
+# ===========================================================================
+
+
+class TestStats:
+    async def test_stats_returns_dict(self, server_port):
+        def _work():
+            sock, rfile = _connect(server_port)
+            try:
+                result = sc.stats(sock, rfile)
+                assert isinstance(result, dict)
+                assert "connections" in result
+                assert "locks" in result
+                assert "semaphores" in result
+                assert "idle_locks" in result
+                assert "idle_semaphores" in result
+                assert isinstance(result["connections"], int)
+                assert isinstance(result["locks"], list)
+                assert isinstance(result["semaphores"], list)
+            finally:
+                _close(sock, rfile)
+
+        await asyncio.to_thread(_work)
+
+    async def test_stats_shows_held_lock(self, server_port):
+        def _work():
+            s1, r1 = _connect(server_port)
+            s2, r2 = _connect(server_port)
+            try:
+                token, _ = sc.acquire(s1, r1, "stats_lock", 5, lease_ttl_s=30)
+                result = sc.stats(s2, r2)
+                lock_keys = [lk["key"] for lk in result["locks"]]
+                assert "stats_lock" in lock_keys
+                sc.release(s1, r1, "stats_lock", token)
+            finally:
+                _close(s1, r1)
+                _close(s2, r2)
+
+        await asyncio.to_thread(_work)
+
+    async def test_stats_shows_held_semaphore(self, server_port):
+        def _work():
+            s1, r1 = _connect(server_port)
+            s2, r2 = _connect(server_port)
+            try:
+                token, _ = sc.sem_acquire(s1, r1, "stats_sem", 5, 2, lease_ttl_s=30)
+                result = sc.stats(s2, r2)
+                sem_keys = [s["key"] for s in result["semaphores"]]
+                assert "stats_sem" in sem_keys
+                sc.sem_release(s1, r1, "stats_sem", token)
+            finally:
+                _close(s1, r1)
+                _close(s2, r2)
+
+        await asyncio.to_thread(_work)
+
+
 class TestSharding:
     def test_empty_servers_raises(self):
         with pytest.raises(ValueError, match="non-empty"):

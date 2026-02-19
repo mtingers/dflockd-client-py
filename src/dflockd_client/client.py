@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import logging
 from dataclasses import dataclass, field
 
@@ -133,6 +134,20 @@ async def release(
     resp = await _readline(reader)
     if resp != "ok":
         raise RuntimeError(f"release failed: {resp!r}")
+
+
+async def stats(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+) -> dict:
+    writer.write(_encode_lines("stats", "_", ""))
+    await writer.drain()
+
+    resp = await _readline(reader)
+    if not resp.startswith("ok "):
+        raise RuntimeError(f"stats failed: {resp!r}")
+
+    return json.loads(resp[3:])
 
 
 @dataclass

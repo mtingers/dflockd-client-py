@@ -1,4 +1,5 @@
 import io
+import json
 import logging
 import socket
 import threading
@@ -123,6 +124,16 @@ def release(sock: socket.socket, rfile: io.TextIOWrapper, key: str, token: str) 
     resp = _readline(rfile)
     if resp != "ok":
         raise RuntimeError(f"release failed: {resp!r}")
+
+
+def stats(sock: socket.socket, rfile: io.TextIOWrapper) -> dict:
+    sock.sendall(_encode_lines("stats", "_", ""))
+
+    resp = _readline(rfile)
+    if not resp.startswith("ok "):
+        raise RuntimeError(f"stats failed: {resp!r}")
+
+    return json.loads(resp[3:])
 
 
 @dataclass

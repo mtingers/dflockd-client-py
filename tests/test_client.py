@@ -652,6 +652,89 @@ class TestAsyncSemTwoPhase:
         await sem2.release()
 
 
+# ===========================================================================
+# Async stats
+# ===========================================================================
+
+
+class TestAsyncStats:
+    @pytest.mark.asyncio
+    async def test_stats_empty(self, server_port):
+        reader, writer = await _open(server_port)
+        try:
+            result = await aclient.stats(reader, writer)
+            assert isinstance(result, dict)
+            assert "connections" in result
+            assert "locks" in result
+            assert "semaphores" in result
+            assert "idle_locks" in result
+            assert "idle_semaphores" in result
+            assert isinstance(result["connections"], int)
+            assert isinstance(result["locks"], list)
+            assert isinstance(result["semaphores"], list)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_stats_with_held_lock(self, server_port):
+        r1, w1 = await _open(server_port)
+        r2, w2 = await _open(server_port)
+        try:
+            token, _ = await aclient.acquire(r1, w1, "stats_lock", 5, lease_ttl_s=30)
+            result = await aclient.stats(r2, w2)
+            lock_keys = [lk["key"] for lk in result["locks"]]
+            assert "stats_lock" in lock_keys
+            await aclient.release(r1, w1, "stats_lock", token)
+        finally:
+            w1.close()
+            w2.close()
+
+
+# ===========================================================================
+# Sync stats (low-level)
+# ===========================================================================
+
+
+class TestSyncStats:
+    @pytest.mark.asyncio
+    async def test_stats_empty(self, server_port):
+        def _work():
+            sock, rfile = _sync_connect(server_port)
+            try:
+                result = sclient.stats(sock, rfile)
+                assert isinstance(result, dict)
+                assert "connections" in result
+                assert "locks" in result
+                assert "semaphores" in result
+                assert "idle_locks" in result
+                assert "idle_semaphores" in result
+            finally:
+                rfile.close()
+                sock.close()
+
+        await asyncio.to_thread(_work)
+
+    @pytest.mark.asyncio
+    async def test_stats_with_held_lock(self, server_port):
+        def _work():
+            s1, r1 = _sync_connect(server_port)
+            s2, r2 = _sync_connect(server_port)
+            try:
+                token, _ = sclient.acquire(s1, r1, "stats_lock", 5, lease_ttl_s=30)
+                result = sclient.stats(s2, r2)
+                lock_keys = [lk["key"] for lk in result["locks"]]
+                assert "stats_lock" in lock_keys
+                sclient.release(s1, r1, "stats_lock", token)
+            finally:
+                r1.close()
+                s1.close()
+                r2.close()
+                s2.close()
+
+        await asyncio.to_thread(_work)
+
+
 class TestAsyncSharding:
     def test_empty_servers_raises(self):
         with pytest.raises(ValueError, match="non-empty"):
