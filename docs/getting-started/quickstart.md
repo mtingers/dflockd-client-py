@@ -73,6 +73,23 @@ with DistributedSemaphore("my-key", limit=3, acquire_timeout_s=10) as sem:
     # up to 3 holders at once
 ```
 
+## Query server stats
+
+Use the low-level `stats()` function to inspect the server's current state:
+
+```python
+import socket
+from dflockd_client.sync_client import stats
+
+sock = socket.create_connection(("127.0.0.1", 6388))
+rfile = sock.makefile("r", encoding="utf-8")
+result = stats(sock, rfile)
+print(result)
+# {'connections': 1, 'locks': [], 'semaphores': [], 'idle_locks': [], 'idle_semaphores': []}
+rfile.close()
+sock.close()
+```
+
 ## What happens under the hood
 
 1. The client opens a TCP connection to the server (selected via sharding if multiple servers are configured).

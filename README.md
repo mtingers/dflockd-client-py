@@ -12,6 +12,7 @@
     - [Parameters](#parameters)
   - [Semaphores](#semaphores)
     - [Parameters](#parameters-1)
+  - [Stats](#stats)
   - [Multi-server sharding](#multi-server-sharding)
           <!--toc:end-->
 
@@ -150,6 +151,41 @@ Manual acquire/release and two-phase (`enqueue()` / `wait()`) work the same as l
 | `servers`           | `[("127.0.0.1", 6388)]` | List of `(host, port)` tuples                                           |
 | `sharding_strategy` | `stable_hash_shard`     | `Callable[[str, int], int]` — maps `(key, num_servers)` to server index |
 | `renew_ratio`       | `0.5`                   | Renew at `lease * ratio` seconds                                        |
+
+## Stats
+
+Query server state (connections, held locks, active semaphores) using the low-level `stats()` function:
+
+```python
+import asyncio
+from dflockd_client.client import stats
+
+async def main():
+    reader, writer = await asyncio.open_connection("127.0.0.1", 6388)
+    result = await stats(reader, writer)
+    print(result)
+    # {'connections': 1, 'locks': [], 'semaphores': [], 'idle_locks': [], 'idle_semaphores': []}
+    writer.close()
+    await writer.wait_closed()
+
+asyncio.run(main())
+```
+
+Sync equivalent:
+
+```python
+import socket
+from dflockd_client.sync_client import stats
+
+sock = socket.create_connection(("127.0.0.1", 6388))
+rfile = sock.makefile("r", encoding="utf-8")
+result = stats(sock, rfile)
+print(result)
+rfile.close()
+sock.close()
+```
+
+Returns a dict with `connections`, `locks`, `semaphores`, `idle_locks`, and `idle_semaphores`.
 
 ## Multi-server sharding
 

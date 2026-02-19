@@ -52,6 +52,10 @@ Once a lock or semaphore is acquired, the client starts a background renewal loo
 
 If renewal fails (server unreachable, lease already expired), the client logs an error and sets `token = None`.
 
+### Stats
+
+The `stats()` function sends a `stats` command to the server and returns a JSON dict with the current server state: active connections, held locks (with owner, lease expiry, and waiter counts), active semaphores (with holder and waiter counts), and idle entries. This is a low-level function that operates on an existing connection.
+
 ### Release and cleanup
 
 On `release()` or context manager exit:

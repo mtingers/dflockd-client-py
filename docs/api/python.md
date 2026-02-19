@@ -103,6 +103,17 @@ async def wait(
 
 Two-phase step 2: block until lock is granted. Returns `(token, lease)`. Raises `TimeoutError` on timeout.
 
+### stats
+
+```python
+async def stats(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+) -> dict
+```
+
+Query server state. Returns a dict with `connections` (int), `locks` (list), `semaphores` (list), `idle_locks` (list), and `idle_semaphores` (list). Raises `RuntimeError` on failure.
+
 ### DistributedSemaphore
 
 ```python
@@ -299,6 +310,17 @@ def wait(
 ```
 
 Two-phase step 2: block until lock is granted. Returns `(token, lease)`. Raises `TimeoutError` on timeout.
+
+### stats
+
+```python
+def stats(
+    sock: socket.socket,
+    rfile: io.TextIOWrapper,
+) -> dict
+```
+
+Query server state. Returns a dict with `connections` (int), `locks` (list), `semaphores` (list), `idle_locks` (list), and `idle_semaphores` (list). Raises `RuntimeError` on failure.
 
 ### DistributedSemaphore
 

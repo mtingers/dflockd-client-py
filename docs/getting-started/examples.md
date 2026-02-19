@@ -215,6 +215,44 @@ Split enqueue and wait for semaphores, just like locks:
             sem.release()
     ```
 
+## Server stats
+
+Query the server for its current state — connections, held locks, and active semaphores:
+
+=== "Async"
+
+    ```python
+    import asyncio
+    from dflockd_client.client import stats
+
+    async def main():
+        reader, writer = await asyncio.open_connection("127.0.0.1", 6388)
+        result = await stats(reader, writer)
+        print(f"connections: {result['connections']}")
+        print(f"locks: {result['locks']}")
+        print(f"semaphores: {result['semaphores']}")
+        writer.close()
+        await writer.wait_closed()
+
+    asyncio.run(main())
+    ```
+
+=== "Sync"
+
+    ```python
+    import socket
+    from dflockd_client.sync_client import stats
+
+    sock = socket.create_connection(("127.0.0.1", 6388))
+    rfile = sock.makefile("r", encoding="utf-8")
+    result = stats(sock, rfile)
+    print(f"connections: {result['connections']}")
+    print(f"locks: {result['locks']}")
+    print(f"semaphores: {result['semaphores']}")
+    rfile.close()
+    sock.close()
+    ```
+
 ## Multi-server sharding
 
 Distribute keys across multiple dflockd instances. Each key deterministically routes to the same server:

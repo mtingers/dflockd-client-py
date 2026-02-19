@@ -206,6 +206,33 @@ rfile.close()
 sock.close()
 ```
 
+## Stats
+
+Query the server for current state using the low-level `stats()` function:
+
+```python
+import socket
+from dflockd_client.sync_client import stats
+
+sock = socket.create_connection(("127.0.0.1", 6388))
+rfile = sock.makefile("r", encoding="utf-8")
+result = stats(sock, rfile)
+print(result)
+# {'connections': 1, 'locks': [], 'semaphores': [], 'idle_locks': [], 'idle_semaphores': []}
+rfile.close()
+sock.close()
+```
+
+Returns a dict with:
+
+| Field | Type | Description |
+|---|---|---|
+| `connections` | `int` | Number of connected TCP clients |
+| `locks` | `list[dict]` | Held locks with `key`, `owner_conn_id`, `lease_expires_in_s`, `waiters` |
+| `semaphores` | `list[dict]` | Active semaphores with `key`, `limit`, `holders`, `waiters` |
+| `idle_locks` | `list` | Unused lock entries |
+| `idle_semaphores` | `list` | Unused semaphore entries |
+
 ## Async vs sync
 
 | | Async | Sync |

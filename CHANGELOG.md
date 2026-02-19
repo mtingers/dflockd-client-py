@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.4.0] - 2026-02-18
+
+### Added
+
+- `stats()` function in both async and sync clients for querying server state (connections, locks, semaphores, idle entries)
+- Stats integration tests for both async and sync clients
+- Documentation for stats in README, API reference, client guides, quickstart, examples, and architecture docs
+
+### Changed
+
+- Bumped version to v1.4.0 to align with dflockd server version
+
+[v1.4.0]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.4.0
+
 ## [v1.1.0] - 2026-02-16
 
 ### Added

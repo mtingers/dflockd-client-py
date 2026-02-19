@@ -207,3 +207,28 @@ await sem_release(reader, writer, "my-key", token)
 writer.close()
 await writer.wait_closed()
 ```
+
+## Stats
+
+Query the server for current state using the low-level `stats()` function:
+
+```python
+from dflockd_client.client import stats
+
+reader, writer = await asyncio.open_connection("127.0.0.1", 6388)
+result = await stats(reader, writer)
+print(result)
+# {'connections': 1, 'locks': [], 'semaphores': [], 'idle_locks': [], 'idle_semaphores': []}
+writer.close()
+await writer.wait_closed()
+```
+
+Returns a dict with:
+
+| Field | Type | Description |
+|---|---|---|
+| `connections` | `int` | Number of connected TCP clients |
+| `locks` | `list[dict]` | Held locks with `key`, `owner_conn_id`, `lease_expires_in_s`, `waiters` |
+| `semaphores` | `list[dict]` | Active semaphores with `key`, `limit`, `holders`, `waiters` |
+| `idle_locks` | `list` | Unused lock entries |
+| `idle_semaphores` | `list` | Unused semaphore entries |

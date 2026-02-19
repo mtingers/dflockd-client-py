@@ -9,6 +9,7 @@ A Python client library for [dflockd](https://github.com/mtingers/dflockd) — a
 - **Automatic lease renewal** — both clients auto-renew leases in the background
 - **Two-phase acquisition** — split enqueue and wait to notify external systems between joining the queue and blocking
 - **Multi-server sharding** — distribute keys across multiple servers with consistent hashing
+- **Server stats** — query connections, held locks, and active semaphores via `stats()`
 - **Zero dependencies** — pure Python 3.12+ using only the standard library
 - **Context manager support** — acquire on entry, release on exit
 
