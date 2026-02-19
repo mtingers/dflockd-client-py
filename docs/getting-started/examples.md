@@ -253,6 +253,42 @@ Query the server for its current state — connections, held locks, and active s
     sock.close()
     ```
 
+## TLS connection
+
+Connect to a TLS-enabled dflockd server using an `ssl.SSLContext`:
+
+=== "Async"
+
+    ```python
+    import asyncio
+    import ssl
+    from dflockd_client.client import DistributedLock
+
+    async def main():
+        ctx = ssl.create_default_context()  # uses system CA bundle
+        # or: ctx = ssl.create_default_context(cafile="/path/to/ca.pem")
+
+        async with DistributedLock("my-key", ssl_context=ctx) as lock:
+            print(f"token={lock.token} lease={lock.lease}")
+
+    asyncio.run(main())
+    ```
+
+=== "Sync"
+
+    ```python
+    import ssl
+    from dflockd_client.sync_client import DistributedLock
+
+    ctx = ssl.create_default_context()  # uses system CA bundle
+    # or: ctx = ssl.create_default_context(cafile="/path/to/ca.pem")
+
+    with DistributedLock("my-key", ssl_context=ctx) as lock:
+        print(f"token={lock.token} lease={lock.lease}")
+    ```
+
+The same `ssl_context` parameter works on `DistributedSemaphore`.
+
 ## Multi-server sharding
 
 Distribute keys across multiple dflockd instances. Each key deterministically routes to the same server:

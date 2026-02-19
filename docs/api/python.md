@@ -13,6 +13,7 @@ class DistributedLock:
     servers: list[tuple[str, int]] = [("127.0.0.1", 6388)]
     sharding_strategy: ShardingStrategy = stable_hash_shard
     renew_ratio: float = 0.5
+    ssl_context: ssl.SSLContext | None = None
 ```
 
 **Methods:**
@@ -126,6 +127,7 @@ class DistributedSemaphore:
     servers: list[tuple[str, int]] = [("127.0.0.1", 6388)]
     sharding_strategy: ShardingStrategy = stable_hash_shard
     renew_ratio: float = 0.5
+    ssl_context: ssl.SSLContext | None = None
 ```
 
 **Methods:**
@@ -229,6 +231,7 @@ class DistributedLock:
     servers: list[tuple[str, int]] = [("127.0.0.1", 6388)]
     sharding_strategy: ShardingStrategy = stable_hash_shard
     renew_ratio: float = 0.5
+    ssl_context: ssl.SSLContext | None = None
 ```
 
 **Methods:**
@@ -334,6 +337,7 @@ class DistributedSemaphore:
     servers: list[tuple[str, int]] = [("127.0.0.1", 6388)]
     sharding_strategy: ShardingStrategy = stable_hash_shard
     renew_ratio: float = 0.5
+    ssl_context: ssl.SSLContext | None = None
 ```
 
 **Methods:**

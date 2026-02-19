@@ -3,6 +3,7 @@
 import asyncio
 import io
 import socket
+import ssl
 import threading
 import time
 
@@ -75,9 +76,15 @@ class TestDistributedLockDefaults:
         assert lock.lease_ttl_s is None
         assert lock.servers == [("127.0.0.1", 6388)]
         assert lock.renew_ratio == 0.5
+        assert lock.ssl_context is None
         assert lock.token is None
         assert lock.lease == 0
         assert lock._closed is False
+
+    def test_ssl_context_set(self):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        lock = sc.DistributedLock(key="k", ssl_context=ctx)
+        assert lock.ssl_context is ctx
 
     def test_close_idempotent(self):
         lock = sc.DistributedLock(key="k")
@@ -629,9 +636,15 @@ class TestDistributedSemaphoreDefaults:
         assert sem.lease_ttl_s is None
         assert sem.servers == [("127.0.0.1", 6388)]
         assert sem.renew_ratio == 0.5
+        assert sem.ssl_context is None
         assert sem.token is None
         assert sem.lease == 0
         assert sem._closed is False
+
+    def test_ssl_context_set(self):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        sem = sc.DistributedSemaphore(key="k", limit=2, ssl_context=ctx)
+        assert sem.ssl_context is ctx
 
     def test_close_idempotent(self):
         sem = sc.DistributedSemaphore(key="k", limit=2)

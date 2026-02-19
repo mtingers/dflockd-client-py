@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.5.0] - 2026-02-18
+
+### Added
+
+- `ssl_context` parameter on `DistributedLock` and `DistributedSemaphore` in both async and sync clients for TLS connections
+- `_connect()` helper in async `DistributedLock` and `DistributedSemaphore` to centralize connection logic
+- TLS unit tests verifying `ssl_context` defaults to `None`
+- TLS integration tests gated behind `DFLOCKD_TEST_TLS_PORT` env var
+- TLS documentation in README, API reference, client guides, and examples
+
+[v1.5.0]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.5.0
+
 ## [v1.4.0] - 2026-02-18
 
 ### Added

@@ -1,7 +1,9 @@
 """Integration tests: async client and sync client against a running dflockd server."""
 
 import asyncio
+import os
 import socket
+import ssl
 import threading
 import time
 
@@ -755,3 +757,142 @@ class TestAsyncSharding:
         async with lock as lk:
             assert lk.token is not None
         assert lock.token is None
+
+
+# ===========================================================================
+# TLS / ssl_context
+# ===========================================================================
+
+
+class TestAsyncSslContextDefaults:
+    def test_lock_ssl_context_default_none(self):
+        lock = aclient.DistributedLock(key="k")
+        assert lock.ssl_context is None
+
+    def test_semaphore_ssl_context_default_none(self):
+        sem = aclient.DistributedSemaphore(key="k", limit=2)
+        assert sem.ssl_context is None
+
+    def test_lock_ssl_context_set(self):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        lock = aclient.DistributedLock(key="k", ssl_context=ctx)
+        assert lock.ssl_context is ctx
+
+    def test_semaphore_ssl_context_set(self):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        sem = aclient.DistributedSemaphore(key="k", limit=2, ssl_context=ctx)
+        assert sem.ssl_context is ctx
+
+
+class TestSyncSslContextDefaults:
+    def test_lock_ssl_context_default_none(self):
+        lock = sclient.DistributedLock(key="k")
+        assert lock.ssl_context is None
+
+    def test_semaphore_ssl_context_default_none(self):
+        sem = sclient.DistributedSemaphore(key="k", limit=2)
+        assert sem.ssl_context is None
+
+    def test_lock_ssl_context_set(self):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        lock = sclient.DistributedLock(key="k", ssl_context=ctx)
+        assert lock.ssl_context is ctx
+
+    def test_semaphore_ssl_context_set(self):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        sem = sclient.DistributedSemaphore(key="k", limit=2, ssl_context=ctx)
+        assert sem.ssl_context is ctx
+
+
+# ===========================================================================
+# TLS integration tests (requires DFLOCKD_TEST_TLS_PORT)
+# ===========================================================================
+
+_tls_port = os.environ.get("DFLOCKD_TEST_TLS_PORT")
+_skip_tls = pytest.mark.skipif(
+    _tls_port is None, reason="DFLOCKD_TEST_TLS_PORT not set"
+)
+
+
+@_skip_tls
+class TestAsyncTlsIntegration:
+    @pytest.fixture()
+    def tls_port(self):
+        return int(os.environ["DFLOCKD_TEST_TLS_PORT"])
+
+    @pytest.fixture()
+    def tls_context(self):
+        cafile = os.environ.get("DFLOCKD_TEST_TLS_CA")
+        return ssl.create_default_context(cafile=cafile)
+
+    @pytest.mark.asyncio
+    async def test_lock_context_manager(self, tls_port, tls_context):
+        lock = aclient.DistributedLock(
+            key="tls_k1",
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
+            servers=[("127.0.0.1", tls_port)],
+            ssl_context=tls_context,
+        )
+        async with lock as lk:
+            assert lk.token is not None
+        assert lock.token is None
+
+    @pytest.mark.asyncio
+    async def test_semaphore_context_manager(self, tls_port, tls_context):
+        sem = aclient.DistributedSemaphore(
+            key="tls_s1",
+            limit=2,
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
+            servers=[("127.0.0.1", tls_port)],
+            ssl_context=tls_context,
+        )
+        async with sem as s:
+            assert s.token is not None
+        assert sem.token is None
+
+
+@_skip_tls
+class TestSyncTlsIntegration:
+    @pytest.fixture()
+    def tls_port(self):
+        return int(os.environ["DFLOCKD_TEST_TLS_PORT"])
+
+    @pytest.fixture()
+    def tls_context(self):
+        cafile = os.environ.get("DFLOCKD_TEST_TLS_CA")
+        return ssl.create_default_context(cafile=cafile)
+
+    @pytest.mark.asyncio
+    async def test_lock_context_manager(self, tls_port, tls_context):
+        def _work():
+            lock = sclient.DistributedLock(
+                key="tls_k1",
+                acquire_timeout_s=5,
+                lease_ttl_s=5,
+                servers=[("127.0.0.1", tls_port)],
+                ssl_context=tls_context,
+            )
+            with lock as lk:
+                assert lk.token is not None
+            assert lock.token is None
+
+        await asyncio.to_thread(_work)
+
+    @pytest.mark.asyncio
+    async def test_semaphore_context_manager(self, tls_port, tls_context):
+        def _work():
+            sem = sclient.DistributedSemaphore(
+                key="tls_s1",
+                limit=2,
+                acquire_timeout_s=5,
+                lease_ttl_s=5,
+                servers=[("127.0.0.1", tls_port)],
+                ssl_context=tls_context,
+            )
+            with sem as s:
+                assert s.token is not None
+            assert sem.token is None
+
+        await asyncio.to_thread(_work)

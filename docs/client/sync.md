@@ -44,6 +44,24 @@ if lock.acquire():
 | `servers` | `list[tuple[str, int]]` | `[("127.0.0.1", 6388)]` | Server addresses |
 | `sharding_strategy` | `ShardingStrategy` | `stable_hash_shard` | Key-to-server mapping function |
 | `renew_ratio` | `float` | `0.5` | Renew at `lease * ratio` seconds |
+| `ssl_context` | `ssl.SSLContext \| None` | `None` | TLS context. `None` uses plain TCP |
+
+## TLS
+
+To connect to a TLS-enabled server, pass an `ssl.SSLContext`:
+
+```python
+import ssl
+from dflockd_client.sync_client import DistributedLock
+
+ctx = ssl.create_default_context()  # uses system CA bundle
+# or: ctx = ssl.create_default_context(cafile="/path/to/ca.pem")
+
+with DistributedLock("my-key", ssl_context=ctx) as lock:
+    print(f"token={lock.token}")
+```
+
+The same `ssl_context` parameter is available on `DistributedSemaphore`.
 
 ## Attributes
 
@@ -188,6 +206,7 @@ if sem.wait(timeout_s=10):
 | `servers` | `list[tuple[str, int]]` | `[("127.0.0.1", 6388)]` | Server addresses |
 | `sharding_strategy` | `ShardingStrategy` | `stable_hash_shard` | Key-to-server mapping function |
 | `renew_ratio` | `float` | `0.5` | Renew at `lease * ratio` seconds |
+| `ssl_context` | `ssl.SSLContext \| None` | `None` | TLS context. `None` uses plain TCP |
 
 ### Semaphore low-level functions
 

@@ -2,6 +2,7 @@ import io
 import json
 import logging
 import socket
+import ssl
 import threading
 from dataclasses import dataclass, field
 
@@ -146,6 +147,7 @@ class DistributedLock:
     )
     sharding_strategy: ShardingStrategy = stable_hash_shard
     renew_ratio: float = 0.5
+    ssl_context: ssl.SSLContext | None = None
 
     _sock: socket.socket | None = field(default=None, repr=False)
     _rfile: io.TextIOWrapper | None = field(default=None, repr=False)
@@ -168,6 +170,10 @@ class DistributedLock:
         self._stop_event.clear()
         host, port = self._pick_server()
         self._sock = socket.create_connection((host, port))
+        if self.ssl_context is not None:
+            self._sock = self.ssl_context.wrap_socket(
+                self._sock, server_hostname=host
+            )
         self._rfile = self._sock.makefile("r", encoding="utf-8")
 
     def _start_renew(self):
@@ -444,6 +450,7 @@ class DistributedSemaphore:
     )
     sharding_strategy: ShardingStrategy = stable_hash_shard
     renew_ratio: float = 0.5
+    ssl_context: ssl.SSLContext | None = None
 
     _sock: socket.socket | None = field(default=None, repr=False)
     _rfile: io.TextIOWrapper | None = field(default=None, repr=False)
@@ -466,6 +473,10 @@ class DistributedSemaphore:
         self._stop_event.clear()
         host, port = self._pick_server()
         self._sock = socket.create_connection((host, port))
+        if self.ssl_context is not None:
+            self._sock = self.ssl_context.wrap_socket(
+                self._sock, server_hostname=host
+            )
         self._rfile = self._sock.makefile("r", encoding="utf-8")
 
     def _start_renew(self):

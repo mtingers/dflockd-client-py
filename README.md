@@ -10,6 +10,7 @@
     - [Manual acquire/release](#manual-acquirerelease)
     - [Two-phase lock acquisition](#two-phase-lock-acquisition)
     - [Parameters](#parameters)
+  - [TLS](#tls)
   - [Semaphores](#semaphores)
     - [Parameters](#parameters-1)
   - [Stats](#stats)
@@ -115,6 +116,36 @@ if await lock.wait(timeout_s=10):
 | `servers`           | `[("127.0.0.1", 6388)]` | List of `(host, port)` tuples                                           |
 | `sharding_strategy` | `stable_hash_shard`     | `Callable[[str, int], int]` — maps `(key, num_servers)` to server index |
 | `renew_ratio`       | `0.5`                   | Renew at `lease * ratio` seconds                                        |
+| `ssl_context`       | `None`                  | `ssl.SSLContext` for TLS connections. `None` uses plain TCP              |
+
+## TLS
+
+To connect to a TLS-enabled dflockd server, pass an `ssl.SSLContext`:
+
+```python
+import ssl
+from dflockd_client.sync_client import DistributedLock
+
+ctx = ssl.create_default_context()  # uses system CA bundle
+# or: ctx = ssl.create_default_context(cafile="/path/to/ca.pem")
+
+with DistributedLock("my-key", ssl_context=ctx) as lock:
+    print(lock.token, lock.lease)
+```
+
+Async equivalent:
+
+```python
+import ssl
+from dflockd_client.client import DistributedLock
+
+ctx = ssl.create_default_context()
+
+async with DistributedLock("my-key", ssl_context=ctx) as lock:
+    print(lock.token, lock.lease)
+```
+
+Both `DistributedLock` and `DistributedSemaphore` accept `ssl_context` in the async and sync clients.
 
 ## Semaphores
 
@@ -151,6 +182,7 @@ Manual acquire/release and two-phase (`enqueue()` / `wait()`) work the same as l
 | `servers`           | `[("127.0.0.1", 6388)]` | List of `(host, port)` tuples                                           |
 | `sharding_strategy` | `stable_hash_shard`     | `Callable[[str, int], int]` — maps `(key, num_servers)` to server index |
 | `renew_ratio`       | `0.5`                   | Renew at `lease * ratio` seconds                                        |
+| `ssl_context`       | `None`                  | `ssl.SSLContext` for TLS connections. `None` uses plain TCP              |
 
 ## Stats
 
