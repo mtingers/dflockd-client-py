@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.6.0] - 2026-02-18
+
+### Added
+
+- `auth_token` parameter on `DistributedLock` and `DistributedSemaphore` in both async and sync clients for token-based authentication
+- Auth handshake is sent automatically in `_connect()` when `auth_token` is set; raises `PermissionError` on failure
+- Auth unit tests verifying `auth_token` defaults to `None` and can be set
+- Auth integration tests gated behind `DFLOCKD_TEST_AUTH_TOKEN` and `DFLOCKD_TEST_AUTH_PORT` env vars
+- Authentication documentation in README, API reference, client guides, and examples
+
+[v1.6.0]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.6.0
+
+## [v1.5.1] - 2026-02-18
+
+### Fixed
+
+- Add return types to async `_connect()` helpers for pyright type narrowing
+
+[v1.5.1]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.5.1
+
 ## [v1.5.0] - 2026-02-18
 
 ### Added

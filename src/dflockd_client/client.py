@@ -162,6 +162,7 @@ class DistributedLock:
     sharding_strategy: ShardingStrategy = stable_hash_shard
     renew_ratio: float = 0.5  # renew at lease * ratio
     ssl_context: ssl.SSLContext | None = None
+    auth_token: str | None = None
 
     _reader: asyncio.StreamReader | None = None
     _writer: asyncio.StreamWriter | None = None
@@ -187,6 +188,13 @@ class DistributedLock:
         self._reader, self._writer = await asyncio.open_connection(
             host, port, ssl=self.ssl_context
         )
+        if self.auth_token is not None:
+            self._writer.write(_encode_lines("auth", "_", self.auth_token))
+            await self._writer.drain()
+            resp = await _readline(self._reader)
+            if resp != "ok":
+                await self.aclose()
+                raise PermissionError(f"authentication failed: {resp!r}")
         return self._reader, self._writer
 
     async def acquire(self) -> bool:
@@ -471,6 +479,7 @@ class DistributedSemaphore:
     sharding_strategy: ShardingStrategy = stable_hash_shard
     renew_ratio: float = 0.5
     ssl_context: ssl.SSLContext | None = None
+    auth_token: str | None = None
 
     _reader: asyncio.StreamReader | None = None
     _writer: asyncio.StreamWriter | None = None
@@ -496,6 +505,13 @@ class DistributedSemaphore:
         self._reader, self._writer = await asyncio.open_connection(
             host, port, ssl=self.ssl_context
         )
+        if self.auth_token is not None:
+            self._writer.write(_encode_lines("auth", "_", self.auth_token))
+            await self._writer.drain()
+            resp = await _readline(self._reader)
+            if resp != "ok":
+                await self.aclose()
+                raise PermissionError(f"authentication failed: {resp!r}")
         return self._reader, self._writer
 
     async def acquire(self) -> bool:

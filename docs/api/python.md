@@ -14,6 +14,7 @@ class DistributedLock:
     sharding_strategy: ShardingStrategy = stable_hash_shard
     renew_ratio: float = 0.5
     ssl_context: ssl.SSLContext | None = None
+    auth_token: str | None = None
 ```
 
 **Methods:**
@@ -128,6 +129,7 @@ class DistributedSemaphore:
     sharding_strategy: ShardingStrategy = stable_hash_shard
     renew_ratio: float = 0.5
     ssl_context: ssl.SSLContext | None = None
+    auth_token: str | None = None
 ```
 
 **Methods:**
@@ -232,6 +234,7 @@ class DistributedLock:
     sharding_strategy: ShardingStrategy = stable_hash_shard
     renew_ratio: float = 0.5
     ssl_context: ssl.SSLContext | None = None
+    auth_token: str | None = None
 ```
 
 **Methods:**
@@ -338,6 +341,7 @@ class DistributedSemaphore:
     sharding_strategy: ShardingStrategy = stable_hash_shard
     renew_ratio: float = 0.5
     ssl_context: ssl.SSLContext | None = None
+    auth_token: str | None = None
 ```
 
 **Methods:**

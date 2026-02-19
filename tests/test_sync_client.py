@@ -77,6 +77,7 @@ class TestDistributedLockDefaults:
         assert lock.servers == [("127.0.0.1", 6388)]
         assert lock.renew_ratio == 0.5
         assert lock.ssl_context is None
+        assert lock.auth_token is None
         assert lock.token is None
         assert lock.lease == 0
         assert lock._closed is False
@@ -637,6 +638,7 @@ class TestDistributedSemaphoreDefaults:
         assert sem.servers == [("127.0.0.1", 6388)]
         assert sem.renew_ratio == 0.5
         assert sem.ssl_context is None
+        assert sem.auth_token is None
         assert sem.token is None
         assert sem.lease == 0
         assert sem._closed is False

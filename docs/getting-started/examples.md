@@ -253,6 +253,34 @@ Query the server for its current state — connections, held locks, and active s
     sock.close()
     ```
 
+## Authentication
+
+Connect to a dflockd server started with `--auth-token`:
+
+=== "Async"
+
+    ```python
+    import asyncio
+    from dflockd_client.client import DistributedLock
+
+    async def main():
+        async with DistributedLock("my-key", auth_token="mysecret") as lock:
+            print(f"token={lock.token} lease={lock.lease}")
+
+    asyncio.run(main())
+    ```
+
+=== "Sync"
+
+    ```python
+    from dflockd_client.sync_client import DistributedLock
+
+    with DistributedLock("my-key", auth_token="mysecret") as lock:
+        print(f"token={lock.token} lease={lock.lease}")
+    ```
+
+The same `auth_token` parameter works on `DistributedSemaphore`. A `PermissionError` is raised if the token is wrong.
+
 ## TLS connection
 
 Connect to a TLS-enabled dflockd server using an `ssl.SSLContext`:

@@ -764,6 +764,42 @@ class TestAsyncSharding:
 # ===========================================================================
 
 
+class TestAsyncAuthTokenDefaults:
+    def test_lock_auth_token_default_none(self):
+        lock = aclient.DistributedLock(key="k")
+        assert lock.auth_token is None
+
+    def test_semaphore_auth_token_default_none(self):
+        sem = aclient.DistributedSemaphore(key="k", limit=2)
+        assert sem.auth_token is None
+
+    def test_lock_auth_token_set(self):
+        lock = aclient.DistributedLock(key="k", auth_token="secret")
+        assert lock.auth_token == "secret"
+
+    def test_semaphore_auth_token_set(self):
+        sem = aclient.DistributedSemaphore(key="k", limit=2, auth_token="secret")
+        assert sem.auth_token == "secret"
+
+
+class TestSyncAuthTokenDefaults:
+    def test_lock_auth_token_default_none(self):
+        lock = sclient.DistributedLock(key="k")
+        assert lock.auth_token is None
+
+    def test_semaphore_auth_token_default_none(self):
+        sem = sclient.DistributedSemaphore(key="k", limit=2)
+        assert sem.auth_token is None
+
+    def test_lock_auth_token_set(self):
+        lock = sclient.DistributedLock(key="k", auth_token="secret")
+        assert lock.auth_token == "secret"
+
+    def test_semaphore_auth_token_set(self):
+        sem = sclient.DistributedSemaphore(key="k", limit=2, auth_token="secret")
+        assert sem.auth_token == "secret"
+
+
 class TestAsyncSslContextDefaults:
     def test_lock_ssl_context_default_none(self):
         lock = aclient.DistributedLock(key="k")
@@ -894,5 +930,151 @@ class TestSyncTlsIntegration:
             with sem as s:
                 assert s.token is not None
             assert sem.token is None
+
+        await asyncio.to_thread(_work)
+
+
+# ===========================================================================
+# Auth token integration tests (requires DFLOCKD_TEST_AUTH_TOKEN + DFLOCKD_TEST_AUTH_PORT)
+# ===========================================================================
+
+_auth_token = os.environ.get("DFLOCKD_TEST_AUTH_TOKEN")
+_auth_port = os.environ.get("DFLOCKD_TEST_AUTH_PORT")
+_skip_auth = pytest.mark.skipif(
+    _auth_token is None or _auth_port is None,
+    reason="DFLOCKD_TEST_AUTH_TOKEN and DFLOCKD_TEST_AUTH_PORT not set",
+)
+
+
+@_skip_auth
+class TestAsyncAuthIntegration:
+    @pytest.fixture()
+    def auth_port(self):
+        return int(os.environ["DFLOCKD_TEST_AUTH_PORT"])
+
+    @pytest.fixture()
+    def auth_token(self):
+        return os.environ["DFLOCKD_TEST_AUTH_TOKEN"]
+
+    @pytest.mark.asyncio
+    async def test_lock_with_auth(self, auth_port, auth_token):
+        lock = aclient.DistributedLock(
+            key="auth_k1",
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
+            servers=[("127.0.0.1", auth_port)],
+            auth_token=auth_token,
+        )
+        async with lock as lk:
+            assert lk.token is not None
+        assert lock.token is None
+
+    @pytest.mark.asyncio
+    async def test_semaphore_with_auth(self, auth_port, auth_token):
+        sem = aclient.DistributedSemaphore(
+            key="auth_s1",
+            limit=2,
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
+            servers=[("127.0.0.1", auth_port)],
+            auth_token=auth_token,
+        )
+        async with sem as s:
+            assert s.token is not None
+        assert sem.token is None
+
+    @pytest.mark.asyncio
+    async def test_lock_bad_token_raises(self, auth_port):
+        lock = aclient.DistributedLock(
+            key="auth_k1",
+            acquire_timeout_s=5,
+            servers=[("127.0.0.1", auth_port)],
+            auth_token="wrong-token",
+        )
+        with pytest.raises(PermissionError, match="authentication failed"):
+            await lock.acquire()
+
+    @pytest.mark.asyncio
+    async def test_semaphore_bad_token_raises(self, auth_port):
+        sem = aclient.DistributedSemaphore(
+            key="auth_s1",
+            limit=2,
+            acquire_timeout_s=5,
+            servers=[("127.0.0.1", auth_port)],
+            auth_token="wrong-token",
+        )
+        with pytest.raises(PermissionError, match="authentication failed"):
+            await sem.acquire()
+
+
+@_skip_auth
+class TestSyncAuthIntegration:
+    @pytest.fixture()
+    def auth_port(self):
+        return int(os.environ["DFLOCKD_TEST_AUTH_PORT"])
+
+    @pytest.fixture()
+    def auth_token(self):
+        return os.environ["DFLOCKD_TEST_AUTH_TOKEN"]
+
+    @pytest.mark.asyncio
+    async def test_lock_with_auth(self, auth_port, auth_token):
+        def _work():
+            lock = sclient.DistributedLock(
+                key="auth_k1",
+                acquire_timeout_s=5,
+                lease_ttl_s=5,
+                servers=[("127.0.0.1", auth_port)],
+                auth_token=auth_token,
+            )
+            with lock as lk:
+                assert lk.token is not None
+            assert lock.token is None
+
+        await asyncio.to_thread(_work)
+
+    @pytest.mark.asyncio
+    async def test_semaphore_with_auth(self, auth_port, auth_token):
+        def _work():
+            sem = sclient.DistributedSemaphore(
+                key="auth_s1",
+                limit=2,
+                acquire_timeout_s=5,
+                lease_ttl_s=5,
+                servers=[("127.0.0.1", auth_port)],
+                auth_token=auth_token,
+            )
+            with sem as s:
+                assert s.token is not None
+            assert sem.token is None
+
+        await asyncio.to_thread(_work)
+
+    @pytest.mark.asyncio
+    async def test_lock_bad_token_raises(self, auth_port):
+        def _work():
+            lock = sclient.DistributedLock(
+                key="auth_k1",
+                acquire_timeout_s=5,
+                servers=[("127.0.0.1", auth_port)],
+                auth_token="wrong-token",
+            )
+            with pytest.raises(PermissionError, match="authentication failed"):
+                lock.acquire()
+
+        await asyncio.to_thread(_work)
+
+    @pytest.mark.asyncio
+    async def test_semaphore_bad_token_raises(self, auth_port):
+        def _work():
+            sem = sclient.DistributedSemaphore(
+                key="auth_s1",
+                limit=2,
+                acquire_timeout_s=5,
+                servers=[("127.0.0.1", auth_port)],
+                auth_token="wrong-token",
+            )
+            with pytest.raises(PermissionError, match="authentication failed"):
+                sem.acquire()
 
         await asyncio.to_thread(_work)

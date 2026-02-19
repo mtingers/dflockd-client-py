@@ -148,6 +148,7 @@ class DistributedLock:
     sharding_strategy: ShardingStrategy = stable_hash_shard
     renew_ratio: float = 0.5
     ssl_context: ssl.SSLContext | None = None
+    auth_token: str | None = None
 
     _sock: socket.socket | None = field(default=None, repr=False)
     _rfile: io.TextIOWrapper | None = field(default=None, repr=False)
@@ -173,6 +174,12 @@ class DistributedLock:
         if self.ssl_context is not None:
             self._sock = self.ssl_context.wrap_socket(self._sock, server_hostname=host)
         self._rfile = self._sock.makefile("r", encoding="utf-8")
+        if self.auth_token is not None:
+            self._sock.sendall(_encode_lines("auth", "_", self.auth_token))
+            resp = _readline(self._rfile)
+            if resp != "ok":
+                self.close()
+                raise PermissionError(f"authentication failed: {resp!r}")
 
     def _start_renew(self):
         self._renew_thread = threading.Thread(target=self._renew_loop, daemon=True)
@@ -449,6 +456,7 @@ class DistributedSemaphore:
     sharding_strategy: ShardingStrategy = stable_hash_shard
     renew_ratio: float = 0.5
     ssl_context: ssl.SSLContext | None = None
+    auth_token: str | None = None
 
     _sock: socket.socket | None = field(default=None, repr=False)
     _rfile: io.TextIOWrapper | None = field(default=None, repr=False)
@@ -474,6 +482,12 @@ class DistributedSemaphore:
         if self.ssl_context is not None:
             self._sock = self.ssl_context.wrap_socket(self._sock, server_hostname=host)
         self._rfile = self._sock.makefile("r", encoding="utf-8")
+        if self.auth_token is not None:
+            self._sock.sendall(_encode_lines("auth", "_", self.auth_token))
+            resp = _readline(self._rfile)
+            if resp != "ok":
+                self.close()
+                raise PermissionError(f"authentication failed: {resp!r}")
 
     def _start_renew(self):
         self._renew_thread = threading.Thread(target=self._renew_loop, daemon=True)

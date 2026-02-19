@@ -52,6 +52,20 @@ if acquired:
 | `sharding_strategy` | `ShardingStrategy` | `stable_hash_shard` | Key-to-server mapping function |
 | `renew_ratio` | `float` | `0.5` | Renew at `lease * ratio` seconds |
 | `ssl_context` | `ssl.SSLContext \| None` | `None` | TLS context. `None` uses plain TCP |
+| `auth_token` | `str \| None` | `None` | Auth token for servers started with `--auth-token`. `None` skips auth |
+
+## Authentication
+
+When the dflockd server is started with `--auth-token`, pass the token to authenticate:
+
+```python
+from dflockd_client.client import DistributedLock
+
+async with DistributedLock("my-key", auth_token="mysecret") as lock:
+    print(f"token={lock.token}")
+```
+
+The same `auth_token` parameter is available on `DistributedSemaphore`. A `PermissionError` is raised if the token is invalid.
 
 ## TLS
 
@@ -211,6 +225,7 @@ if await sem.wait(timeout_s=10):
 | `sharding_strategy` | `ShardingStrategy` | `stable_hash_shard` | Key-to-server mapping function |
 | `renew_ratio` | `float` | `0.5` | Renew at `lease * ratio` seconds |
 | `ssl_context` | `ssl.SSLContext \| None` | `None` | TLS context. `None` uses plain TCP |
+| `auth_token` | `str \| None` | `None` | Auth token for servers started with `--auth-token`. `None` skips auth |
 
 ### Semaphore low-level functions
 

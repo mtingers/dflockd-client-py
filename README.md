@@ -117,6 +117,29 @@ if await lock.wait(timeout_s=10):
 | `sharding_strategy` | `stable_hash_shard`     | `Callable[[str, int], int]` — maps `(key, num_servers)` to server index |
 | `renew_ratio`       | `0.5`                   | Renew at `lease * ratio` seconds                                        |
 | `ssl_context`       | `None`                  | `ssl.SSLContext` for TLS connections. `None` uses plain TCP              |
+| `auth_token`        | `None`                  | Auth token for servers started with `--auth-token`. `None` skips auth    |
+
+## Authentication
+
+When the dflockd server is started with `--auth-token`, pass the token to authenticate:
+
+```python
+from dflockd_client.sync_client import DistributedLock
+
+with DistributedLock("my-key", auth_token="mysecret") as lock:
+    print(lock.token, lock.lease)
+```
+
+Async equivalent:
+
+```python
+from dflockd_client.client import DistributedLock
+
+async with DistributedLock("my-key", auth_token="mysecret") as lock:
+    print(lock.token, lock.lease)
+```
+
+Both `DistributedLock` and `DistributedSemaphore` accept `auth_token` in the async and sync clients. A `PermissionError` is raised if the token is invalid.
 
 ## TLS
 
@@ -183,6 +206,7 @@ Manual acquire/release and two-phase (`enqueue()` / `wait()`) work the same as l
 | `sharding_strategy` | `stable_hash_shard`     | `Callable[[str, int], int]` — maps `(key, num_servers)` to server index |
 | `renew_ratio`       | `0.5`                   | Renew at `lease * ratio` seconds                                        |
 | `ssl_context`       | `None`                  | `ssl.SSLContext` for TLS connections. `None` uses plain TCP              |
+| `auth_token`        | `None`                  | Auth token for servers started with `--auth-token`. `None` skips auth    |
 
 ## Stats
 
