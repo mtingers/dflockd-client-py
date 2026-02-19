@@ -171,9 +171,7 @@ class DistributedLock:
         host, port = self._pick_server()
         self._sock = socket.create_connection((host, port))
         if self.ssl_context is not None:
-            self._sock = self.ssl_context.wrap_socket(
-                self._sock, server_hostname=host
-            )
+            self._sock = self.ssl_context.wrap_socket(self._sock, server_hostname=host)
         self._rfile = self._sock.makefile("r", encoding="utf-8")
 
     def _start_renew(self):
@@ -474,9 +472,7 @@ class DistributedSemaphore:
         host, port = self._pick_server()
         self._sock = socket.create_connection((host, port))
         if self.ssl_context is not None:
-            self._sock = self.ssl_context.wrap_socket(
-                self._sock, server_hostname=host
-            )
+            self._sock = self.ssl_context.wrap_socket(self._sock, server_hostname=host)
         self._rfile = self._sock.makefile("r", encoding="utf-8")
 
     def _start_renew(self):
