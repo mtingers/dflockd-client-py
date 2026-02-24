@@ -347,15 +347,17 @@ class _SyncBase:
 
     def _renew_loop(self):
         sock, rfile, token = self._sock, self._rfile, self.token
-        assert sock is not None and rfile is not None and token is not None
+        if sock is None or rfile is None or token is None:
+            return
         interval = max(1.0, self.lease * self.renew_ratio)
         while not self._stop_event.wait(interval):
-            if self._closed:
+            if self._stop_event.is_set():
                 return
             try:
+                sock.settimeout(30)
                 remaining = self._proto_renew(sock, rfile, token)
             except Exception:
-                if self._closed:
+                if self._stop_event.is_set():
                     return
                 log.error(
                     "%s lost (renew failed): key=%s token=%s",
@@ -370,15 +372,9 @@ class _SyncBase:
 
     def __exit__(self, exc_type, exc, tb):
         try:
-            self._stop_renew()
-            sock, rfile = self._sock, self._rfile
-            if sock is not None and rfile is not None and self.token:
-                try:
-                    self._proto_release(sock, rfile, self.token)
-                except Exception:
-                    pass
-        finally:
-            self.close()
+            self.release()
+        except Exception:
+            pass
 
     def close(self):
         if self._closed:

@@ -17,7 +17,10 @@ from .sharding import DEFAULT_SERVERS, ShardingStrategy, stable_hash_shard
 
 
 async def _readline(reader: asyncio.StreamReader) -> str:
-    raw = await reader.readline()
+    try:
+        raw = await reader.readline()
+    except ValueError as e:
+        raise RuntimeError("server response exceeded line length limit") from e
     if raw == b"":
         raise ConnectionError("server closed connection")
     if len(raw) > _MAX_LINE_LEN:
@@ -351,7 +354,8 @@ class _AsyncBase:
         return self
 
     async def _renew_loop(self):
-        assert self._reader and self._writer and self.token
+        if not (self._reader and self._writer and self.token):
+            return
         interval = max(1.0, self.lease * self.renew_ratio)
         try:
             while True:
@@ -379,14 +383,8 @@ class _AsyncBase:
             return
 
     async def __aexit__(self, exc_type, exc, tb):
-        try:
-            await self._cancel_renew()
-
-            if self._reader and self._writer and self.token:
-                with contextlib.suppress(Exception):
-                    await self._proto_release(self._reader, self._writer, self.token)
-        finally:
-            await self.aclose()
+        with contextlib.suppress(Exception):
+            await self.release()
 
     async def aclose(self):
         if self._closed:

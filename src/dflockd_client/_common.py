@@ -1,7 +1,7 @@
 """Shared protocol helpers used by both async and sync clients."""
 
 import logging
-from typing import TypedDict
+from typing import Any, TypedDict
 
 log = logging.getLogger("dflockd-client")
 
@@ -31,7 +31,7 @@ def parse_lease(parts: list[str]) -> int:
 
 class StatsResult(TypedDict):
     connections: int
-    locks: list[dict]
-    semaphores: list[dict]
+    locks: list[dict[str, Any]]
+    semaphores: list[dict[str, Any]]
     idle_locks: list[str]
     idle_semaphores: list[str]
