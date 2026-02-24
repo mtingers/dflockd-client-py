@@ -47,6 +47,14 @@ class TestEncodeLines:
         result = sc.encode_lines("caf\u00e9")
         assert result == "caf\u00e9\n".encode("utf-8")
 
+    def test_rejects_newline(self):
+        with pytest.raises(ValueError, match="newlines"):
+            sc.encode_lines("bad\nline")
+
+    def test_rejects_carriage_return(self):
+        with pytest.raises(ValueError, match="newlines"):
+            sc.encode_lines("bad\rline")
+
 
 class TestReadline:
     def test_normal(self):

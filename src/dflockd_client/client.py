@@ -83,8 +83,11 @@ async def renew(
 
     # ok <seconds_remaining> (optional)
     parts = resp.split()
-    if len(parts) >= 2 and parts[1].isdigit():
-        return int(parts[1])
+    if len(parts) >= 2:
+        try:
+            return int(parts[1])
+        except ValueError:
+            pass
     return -1
 
 
@@ -274,9 +277,13 @@ class _AsyncBase:
             timeout=self.connect_timeout_s,
         )
         if self.auth_token is not None:
-            self._writer.write(encode_lines("auth", "_", self.auth_token))
-            await self._writer.drain()
-            resp = await _readline(self._reader)
+            try:
+                self._writer.write(encode_lines("auth", "_", self.auth_token))
+                await self._writer.drain()
+                resp = await _readline(self._reader)
+            except BaseException:
+                await self.aclose()
+                raise
             if resp != "ok":
                 await self.aclose()
                 raise PermissionError(f"authentication failed: {resp!r}")
@@ -479,8 +486,11 @@ async def sem_renew(
         raise RuntimeError(f"sem_renew failed: {resp!r}")
 
     parts = resp.split()
-    if len(parts) >= 2 and parts[1].isdigit():
-        return int(parts[1])
+    if len(parts) >= 2:
+        try:
+            return int(parts[1])
+        except ValueError:
+            pass
     return -1
 
 
@@ -557,7 +567,7 @@ async def sem_release(
 
 @dataclass
 class DistributedSemaphore(_AsyncBase):
-    limit: int = 0
+    limit: int
 
     def __post_init__(self):
         if self.limit <= 0:

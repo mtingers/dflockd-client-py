@@ -291,7 +291,7 @@ class TestDisconnectBehavior:
         """When a client disconnects, the server releases its lock."""
         host, port = server_host_port
         r1, w1 = await _open(host, port)
-        token1, _ = await aclient.acquire(r1, w1, "k1", 5, lease_ttl_s=30)
+        await aclient.acquire(r1, w1, "k1", 5, lease_ttl_s=30)
 
         # Disconnect abruptly
         w1.close()

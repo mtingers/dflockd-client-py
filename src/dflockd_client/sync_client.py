@@ -76,8 +76,11 @@ def renew(
         raise RuntimeError(f"renew failed: {resp!r}")
 
     parts = resp.split()
-    if len(parts) >= 2 and parts[1].isdigit():
-        return int(parts[1])
+    if len(parts) >= 2:
+        try:
+            return int(parts[1])
+        except ValueError:
+            pass
     return -1
 
 
@@ -256,8 +259,12 @@ class _SyncBase:
             self._rfile = None
             raise
         if self.auth_token is not None:
-            self._sock.sendall(encode_lines("auth", "_", self.auth_token))
-            resp = _readline(self._rfile)
+            try:
+                self._sock.sendall(encode_lines("auth", "_", self.auth_token))
+                resp = _readline(self._rfile)
+            except BaseException:
+                self.close()
+                raise
             if resp != "ok":
                 self.close()
                 raise PermissionError(f"authentication failed: {resp!r}")
@@ -275,7 +282,8 @@ class _SyncBase:
     def acquire(self) -> bool:
         self._connect()
         sock, rfile = self._sock, self._rfile
-        assert sock is not None and rfile is not None
+        if sock is None or rfile is None:
+            raise RuntimeError("connection failed")
         try:
             self.token, self.lease = self._proto_acquire(sock, rfile)
         except TimeoutError:
@@ -294,7 +302,8 @@ class _SyncBase:
         """
         self._connect()
         sock, rfile = self._sock, self._rfile
-        assert sock is not None and rfile is not None
+        if sock is None or rfile is None:
+            raise RuntimeError("connection failed")
         try:
             status, tok, lease = self._proto_enqueue(sock, rfile)
         except BaseException:
@@ -469,8 +478,11 @@ def sem_renew(
         raise RuntimeError(f"sem_renew failed: {resp!r}")
 
     parts = resp.split()
-    if len(parts) >= 2 and parts[1].isdigit():
-        return int(parts[1])
+    if len(parts) >= 2:
+        try:
+            return int(parts[1])
+        except ValueError:
+            pass
     return -1
 
 
@@ -544,7 +556,7 @@ def sem_release(
 
 @dataclass
 class DistributedSemaphore(_SyncBase):
-    limit: int = 0
+    limit: int
 
     def __post_init__(self):
         if self.limit <= 0:
