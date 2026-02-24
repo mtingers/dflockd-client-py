@@ -7,7 +7,7 @@ import warnings
 from dataclasses import dataclass, field
 from typing import TextIO
 
-from ._common import StatsResult, encode_lines, log, parse_lease
+from ._common import _MAX_LINE_LEN, StatsResult, encode_lines, log, parse_lease
 from .sharding import DEFAULT_SERVERS, ShardingStrategy, stable_hash_shard
 
 _CONNECT_TIMEOUT_S = 10
@@ -17,6 +17,8 @@ def _readline(rfile: TextIO) -> str:
     raw = rfile.readline()
     if raw == "":
         raise ConnectionError("server closed connection")
+    if len(raw) > _MAX_LINE_LEN:
+        raise RuntimeError(f"server response too large ({len(raw)} chars)")
     return raw.rstrip("\r\n")
 
 
@@ -152,26 +154,31 @@ class DistributedLock:
     auth_token: str | None = None
     connect_timeout_s: float = _CONNECT_TIMEOUT_S
 
-    _sock: socket.socket | None = field(default=None, repr=False)
-    _rfile: io.TextIOWrapper | None = field(default=None, repr=False)
-    token: str | None = None
-    lease: int = 0
-    _renew_thread: threading.Thread | None = field(default=None, repr=False)
-    _stop_event: threading.Event = field(default_factory=threading.Event, repr=False)
-    _closed: bool = False
+    _sock: socket.socket | None = field(default=None, init=False, repr=False)
+    _rfile: io.TextIOWrapper | None = field(default=None, init=False, repr=False)
+    token: str | None = field(default=None, init=False)
+    lease: int = field(default=0, init=False)
+    _renew_thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _stop_event: threading.Event = field(
+        default_factory=threading.Event, init=False, repr=False
+    )
+    _closed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self):
         if not self.servers:
             raise ValueError("servers must be a non-empty list")
 
     def __del__(self):
-        if self._sock is not None:
-            warnings.warn(
-                f"DistributedLock(key={self.key!r}) was garbage collected without "
-                "calling release() or close(). This leaks a connection.",
-                ResourceWarning,
-                stacklevel=1,
-            )
+        try:
+            if self._sock is not None:
+                warnings.warn(
+                    f"DistributedLock(key={self.key!r}) was garbage collected without "
+                    "calling release() or close(). This leaks a connection.",
+                    ResourceWarning,
+                    stacklevel=1,
+                )
+        except Exception:
+            pass
 
     def _pick_server(self) -> tuple[str, int]:
         idx = self.sharding_strategy(self.key, len(self.servers))
@@ -275,14 +282,16 @@ class DistributedLock:
         return True
 
     def release(self) -> bool:
+        released = False
         try:
             self._stop_renew()
             sock, rfile = self._sock, self._rfile
             if sock is not None and rfile is not None and self.token:
                 release(sock, rfile, self.key, self.token)
+                released = True
         finally:
             self.close()
-        return True
+        return released
 
     def __enter__(self):
         self._connect()
@@ -327,7 +336,10 @@ class DistributedLock:
             self._stop_renew()
             sock, rfile = self._sock, self._rfile
             if sock is not None and rfile is not None and self.token:
-                release(sock, rfile, self.key, self.token)
+                try:
+                    release(sock, rfile, self.key, self.token)
+                except Exception:
+                    pass
         finally:
             self.close()
 
@@ -485,26 +497,31 @@ class DistributedSemaphore:
     auth_token: str | None = None
     connect_timeout_s: float = _CONNECT_TIMEOUT_S
 
-    _sock: socket.socket | None = field(default=None, repr=False)
-    _rfile: io.TextIOWrapper | None = field(default=None, repr=False)
-    token: str | None = None
-    lease: int = 0
-    _renew_thread: threading.Thread | None = field(default=None, repr=False)
-    _stop_event: threading.Event = field(default_factory=threading.Event, repr=False)
-    _closed: bool = False
+    _sock: socket.socket | None = field(default=None, init=False, repr=False)
+    _rfile: io.TextIOWrapper | None = field(default=None, init=False, repr=False)
+    token: str | None = field(default=None, init=False)
+    lease: int = field(default=0, init=False)
+    _renew_thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _stop_event: threading.Event = field(
+        default_factory=threading.Event, init=False, repr=False
+    )
+    _closed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self):
         if not self.servers:
             raise ValueError("servers must be a non-empty list")
 
     def __del__(self):
-        if self._sock is not None:
-            warnings.warn(
-                f"DistributedSemaphore(key={self.key!r}) was garbage collected without "
-                "calling release() or close(). This leaks a connection.",
-                ResourceWarning,
-                stacklevel=1,
-            )
+        try:
+            if self._sock is not None:
+                warnings.warn(
+                    f"DistributedSemaphore(key={self.key!r}) was garbage collected without "
+                    "calling release() or close(). This leaks a connection.",
+                    ResourceWarning,
+                    stacklevel=1,
+                )
+        except Exception:
+            pass
 
     def _pick_server(self) -> tuple[str, int]:
         idx = self.sharding_strategy(self.key, len(self.servers))
@@ -612,14 +629,16 @@ class DistributedSemaphore:
         return True
 
     def release(self) -> bool:
+        released = False
         try:
             self._stop_renew()
             sock, rfile = self._sock, self._rfile
             if sock is not None and rfile is not None and self.token:
                 sem_release(sock, rfile, self.key, self.token)
+                released = True
         finally:
             self.close()
-        return True
+        return released
 
     def __enter__(self):
         self._connect()
@@ -665,7 +684,10 @@ class DistributedSemaphore:
             self._stop_renew()
             sock, rfile = self._sock, self._rfile
             if sock is not None and rfile is not None and self.token:
-                sem_release(sock, rfile, self.key, self.token)
+                try:
+                    sem_release(sock, rfile, self.key, self.token)
+                except Exception:
+                    pass
         finally:
             self.close()
 

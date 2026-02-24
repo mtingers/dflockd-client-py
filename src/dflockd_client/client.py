@@ -5,7 +5,7 @@ import ssl
 import warnings
 from dataclasses import dataclass, field
 
-from ._common import StatsResult, encode_lines, log, parse_lease
+from ._common import _MAX_LINE_LEN, StatsResult, encode_lines, log, parse_lease
 from .sharding import DEFAULT_SERVERS, ShardingStrategy, stable_hash_shard
 
 _CONNECT_TIMEOUT_S = 10
@@ -15,6 +15,8 @@ async def _readline(reader: asyncio.StreamReader) -> str:
     raw = await reader.readline()
     if raw == b"":
         raise ConnectionError("server closed connection")
+    if len(raw) > _MAX_LINE_LEN:
+        raise RuntimeError(f"server response too large ({len(raw)} bytes)")
     return raw.decode("utf-8").rstrip("\r\n")
 
 
@@ -165,25 +167,28 @@ class DistributedLock:
     auth_token: str | None = None
     connect_timeout_s: float = _CONNECT_TIMEOUT_S
 
-    _reader: asyncio.StreamReader | None = None
-    _writer: asyncio.StreamWriter | None = None
-    token: str | None = None
-    lease: int = 0
-    _renew_task: asyncio.Task | None = None
-    _closed: bool = False
+    _reader: asyncio.StreamReader | None = field(default=None, init=False, repr=False)
+    _writer: asyncio.StreamWriter | None = field(default=None, init=False, repr=False)
+    token: str | None = field(default=None, init=False)
+    lease: int = field(default=0, init=False)
+    _renew_task: asyncio.Task | None = field(default=None, init=False, repr=False)
+    _closed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self):
         if not self.servers:
             raise ValueError("servers must be a non-empty list")
 
     def __del__(self):
-        if self._writer is not None:
-            warnings.warn(
-                f"DistributedLock(key={self.key!r}) was garbage collected without "
-                "calling release() or aclose(). This leaks a connection.",
-                ResourceWarning,
-                stacklevel=1,
-            )
+        try:
+            if self._writer is not None:
+                warnings.warn(
+                    f"DistributedLock(key={self.key!r}) was garbage collected without "
+                    "calling release() or aclose(). This leaks a connection.",
+                    ResourceWarning,
+                    stacklevel=1,
+                )
+        except Exception:
+            pass
 
     def _pick_server(self) -> tuple[str, int]:
         idx = self.sharding_strategy(self.key, len(self.servers))
@@ -280,14 +285,16 @@ class DistributedLock:
         return True
 
     async def release(self) -> bool:
+        released = False
         try:
             await self._cancel_renew()
 
             if self._reader and self._writer and self.token:
                 await release(self._reader, self._writer, self.key, self.token)
+                released = True
         finally:
             await self.aclose()
-        return True
+        return released
 
     async def __aenter__(self):
         reader, writer = await self._connect()
@@ -498,25 +505,28 @@ class DistributedSemaphore:
     auth_token: str | None = None
     connect_timeout_s: float = _CONNECT_TIMEOUT_S
 
-    _reader: asyncio.StreamReader | None = None
-    _writer: asyncio.StreamWriter | None = None
-    token: str | None = None
-    lease: int = 0
-    _renew_task: asyncio.Task | None = None
-    _closed: bool = False
+    _reader: asyncio.StreamReader | None = field(default=None, init=False, repr=False)
+    _writer: asyncio.StreamWriter | None = field(default=None, init=False, repr=False)
+    token: str | None = field(default=None, init=False)
+    lease: int = field(default=0, init=False)
+    _renew_task: asyncio.Task | None = field(default=None, init=False, repr=False)
+    _closed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self):
         if not self.servers:
             raise ValueError("servers must be a non-empty list")
 
     def __del__(self):
-        if self._writer is not None:
-            warnings.warn(
-                f"DistributedSemaphore(key={self.key!r}) was garbage collected without "
-                "calling release() or aclose(). This leaks a connection.",
-                ResourceWarning,
-                stacklevel=1,
-            )
+        try:
+            if self._writer is not None:
+                warnings.warn(
+                    f"DistributedSemaphore(key={self.key!r}) was garbage collected without "
+                    "calling release() or aclose(). This leaks a connection.",
+                    ResourceWarning,
+                    stacklevel=1,
+                )
+        except Exception:
+            pass
 
     def _pick_server(self) -> tuple[str, int]:
         idx = self.sharding_strategy(self.key, len(self.servers))
@@ -613,14 +623,16 @@ class DistributedSemaphore:
         return True
 
     async def release(self) -> bool:
+        released = False
         try:
             await self._cancel_renew()
 
             if self._reader and self._writer and self.token:
                 await sem_release(self._reader, self._writer, self.key, self.token)
+                released = True
         finally:
             await self.aclose()
-        return True
+        return released
 
     async def __aenter__(self):
         reader, writer = await self._connect()

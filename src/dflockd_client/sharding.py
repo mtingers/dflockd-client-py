@@ -14,4 +14,6 @@ def stable_hash_shard(key: str, num_servers: int) -> int:
     Unlike the built-in ``hash()``, ``zlib.crc32`` is deterministic across
     processes regardless of ``PYTHONHASHSEED``.
     """
+    if num_servers <= 0:
+        raise ValueError("num_servers must be > 0")
     return zlib.crc32(key.encode("utf-8")) % num_servers

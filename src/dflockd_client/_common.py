@@ -5,6 +5,8 @@ from typing import TypedDict
 
 log = logging.getLogger("dflockd-client")
 
+_MAX_LINE_LEN = 1_048_576  # 1 MiB — guard against unbounded server responses
+
 
 def encode_lines(*lines: str) -> bytes:
     return ("".join(f"{ln}\n" for ln in lines)).encode("utf-8")
