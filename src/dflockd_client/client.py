@@ -385,7 +385,6 @@ class _AsyncBase:
                         self.key,
                         self.token,
                     )
-                    await self.aclose()
                     return
                 if remaining > 0:
                     interval = max(1.0, remaining * self.renew_ratio)

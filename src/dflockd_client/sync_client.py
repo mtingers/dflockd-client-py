@@ -366,7 +366,7 @@ class _SyncBase:
                     return
                 try:
                     old_timeout = sock.gettimeout()
-                    sock.settimeout(30)
+                    sock.settimeout(5)
                     try:
                         remaining = self._proto_renew(sock, rfile, token)
                     finally:
@@ -382,7 +382,6 @@ class _SyncBase:
                     )
                     renew_failed = True
             if renew_failed:
-                self.close()
                 return
             if remaining > 0:
                 interval = max(1.0, remaining * self.renew_ratio)
@@ -398,6 +397,14 @@ class _SyncBase:
             return
         self._closed = True
         self._stop_event.set()
+        # Interrupt any blocking socket read (e.g. in _renew_loop) so we
+        # don't stall waiting for _io_lock.
+        sock = self._sock
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
         with self._io_lock:
             if self._rfile:
                 try:
