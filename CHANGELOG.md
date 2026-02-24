@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.6.1] - 2026-02-24
+
+### Added
+
+- GitHub Actions workflow to publish to PyPI on new releases via trusted publishing
+
+[v1.6.1]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.6.1
+
 ## [v1.6.0] - 2026-02-18
 
 ### Added
