@@ -360,11 +360,13 @@ class _SyncBase:
             return
         interval = max(1.0, self.lease * self.renew_ratio)
         while not self._stop_event.wait(interval):
-            if self._stop_event.is_set():
-                return
             try:
+                old_timeout = sock.gettimeout()
                 sock.settimeout(30)
-                remaining = self._proto_renew(sock, rfile, token)
+                try:
+                    remaining = self._proto_renew(sock, rfile, token)
+                finally:
+                    sock.settimeout(old_timeout)
             except Exception:
                 if self._stop_event.is_set():
                     return

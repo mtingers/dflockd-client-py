@@ -361,7 +361,8 @@ class _AsyncBase:
         return self
 
     async def _renew_loop(self):
-        if not (self._reader and self._writer and self.token):
+        reader, writer, token = self._reader, self._writer, self.token
+        if not (reader and writer and token):
             return
         interval = max(1.0, self.lease * self.renew_ratio)
         try:
@@ -369,7 +370,7 @@ class _AsyncBase:
                 await asyncio.sleep(interval)
                 try:
                     remaining = await self._proto_renew(
-                        self._reader, self._writer, self.token
+                        reader, writer, token
                     )
                 except asyncio.CancelledError:
                     raise
@@ -397,6 +398,7 @@ class _AsyncBase:
         if self._closed:
             return
         self._closed = True
+        await self._cancel_renew()
         if self._writer:
             try:
                 self._writer.close()
