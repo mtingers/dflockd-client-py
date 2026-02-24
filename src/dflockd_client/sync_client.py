@@ -207,7 +207,7 @@ class _SyncBase:
                     ResourceWarning,
                     stacklevel=1,
                 )
-        except Exception:
+        except BaseException:
             pass
 
     # --- protocol hooks (override in subclasses) ---
@@ -246,6 +246,8 @@ class _SyncBase:
     def _connect(self) -> tuple[socket.socket, io.TextIOWrapper]:
         self._stop_renew()
         self.close()
+        # Reset for new connection. Order matters: close() sets both
+        # _closed and _stop_event, so clear them after close().
         self._closed = False
         self._stop_event.clear()
         host, port = self._pick_server()
@@ -253,7 +255,7 @@ class _SyncBase:
         try:
             if self.ssl_context is not None:
                 sock = self.ssl_context.wrap_socket(sock, server_hostname=host)
-            sock.settimeout(None)
+            sock.settimeout(self.connect_timeout_s)
             self._sock = sock
             self._rfile = self._sock.makefile("r", encoding="utf-8")
         except BaseException:
@@ -271,6 +273,7 @@ class _SyncBase:
             if resp != "ok":
                 self.close()
                 raise PermissionError(f"authentication failed: {resp!r}")
+        self._sock.settimeout(None)
         return self._sock, self._rfile
 
     def _start_renew(self):
@@ -319,6 +322,8 @@ class _SyncBase:
             self.lease = lease or 0
             sock.settimeout(None)
             self._start_renew()
+        else:
+            sock.settimeout(None)
         return status
 
     def wait(self, timeout_s: int | None = None) -> bool:
@@ -353,8 +358,16 @@ class _SyncBase:
                 sock, rfile = self._sock, self._rfile
                 if sock is not None and rfile is not None and self.token:
                     sock.settimeout(30)
-                    self._proto_release(sock, rfile, self.token)
-                    released = True
+                    try:
+                        self._proto_release(sock, rfile, self.token)
+                        released = True
+                    except Exception:
+                        log.warning(
+                            "%s explicit release failed (lease will expire server-side): key=%s",
+                            type(self).__name__,
+                            self.key,
+                            exc_info=True,
+                        )
         finally:
             self.close()
         return released
@@ -373,7 +386,7 @@ class _SyncBase:
             renew_failed = False
             remaining = -1
             with self._io_lock:
-                if self._stop_event.is_set():
+                if self._stop_event.is_set() or self._closed:
                     return
                 try:
                     old_timeout = sock.gettimeout()

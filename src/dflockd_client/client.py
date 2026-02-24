@@ -23,6 +23,8 @@ async def _readline(reader: asyncio.StreamReader) -> str:
         raise RuntimeError("server response exceeded line length limit") from e
     if raw == b"":
         raise ConnectionError("server closed connection")
+    if len(raw) > _MAX_LINE_LEN:
+        raise RuntimeError(f"server response too large ({len(raw)} bytes)")
     return raw.decode("utf-8").rstrip("\r\n")
 
 
@@ -215,7 +217,7 @@ class _AsyncBase:
                     ResourceWarning,
                     stacklevel=1,
                 )
-        except Exception:
+        except BaseException:
             pass
 
     # --- protocol hooks (override in subclasses) ---
@@ -280,7 +282,9 @@ class _AsyncBase:
             try:
                 self._writer.write(encode_lines("auth", "_", self.auth_token))
                 await self._writer.drain()
-                resp = await _readline(self._reader)
+                resp = await asyncio.wait_for(
+                    _readline(self._reader), timeout=self.connect_timeout_s
+                )
             except BaseException:
                 await self.aclose()
                 raise
@@ -349,8 +353,16 @@ class _AsyncBase:
             await self._cancel_renew()
 
             if self._reader and self._writer and self.token:
-                await self._proto_release(self._reader, self._writer, self.token)
-                released = True
+                try:
+                    await self._proto_release(self._reader, self._writer, self.token)
+                    released = True
+                except Exception:
+                    log.warning(
+                        "%s explicit release failed (lease will expire server-side): key=%s",
+                        type(self).__name__,
+                        self.key,
+                        exc_info=True,
+                    )
         finally:
             await self.aclose()
         return released
@@ -368,7 +380,7 @@ class _AsyncBase:
         try:
             while True:
                 await asyncio.sleep(interval)
-                if self._closed:
+                if self._closed or self._writer is not writer or self.token != token:
                     return
                 try:
                     remaining = await self._proto_renew(
