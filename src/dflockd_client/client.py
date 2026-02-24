@@ -377,7 +377,7 @@ class _AsyncBase:
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    if self._closed:
+                    if self._closed or self._writer is None:
                         return
                     log.error(
                         "%s lost (renew failed): key=%s token=%s",
@@ -450,6 +450,8 @@ async def sem_acquire(
     limit: int,
     lease_ttl_s: int | None = None,
 ) -> tuple[str, int]:
+    if limit <= 0:
+        raise ValueError("limit must be > 0")
     # sl\nkey\n"<timeout> <limit> [<lease>]"\n
     arg = f"{acquire_timeout_s} {limit}"
     if lease_ttl_s is not None:
@@ -508,6 +510,8 @@ async def sem_enqueue(
     Two-phase enqueue for semaphore: join FIFO queue, return immediately.
     Returns (status, token, lease) where status is "acquired" or "queued".
     """
+    if limit <= 0:
+        raise ValueError("limit must be > 0")
     arg = str(limit) if lease_ttl_s is None else f"{limit} {lease_ttl_s}"
     writer.write(encode_lines("se", key, arg))
     await writer.drain()

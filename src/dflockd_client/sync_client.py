@@ -281,7 +281,8 @@ class _SyncBase:
         if self._renew_thread is not None:
             self._stop_event.set()
             self._renew_thread.join(timeout=5)
-            self._renew_thread = None
+            if not self._renew_thread.is_alive():
+                self._renew_thread = None
 
     def acquire(self) -> bool:
         sock, rfile = self._connect()
@@ -372,7 +373,7 @@ class _SyncBase:
                     finally:
                         sock.settimeout(old_timeout)
                 except Exception:
-                    if self._stop_event.is_set():
+                    if self._stop_event.is_set() or self._closed:
                         return
                     log.error(
                         "%s lost (renew failed): key=%s token=%s",
@@ -461,6 +462,8 @@ def sem_acquire(
     limit: int,
     lease_ttl_s: int | None = None,
 ) -> tuple[str, int]:
+    if limit <= 0:
+        raise ValueError("limit must be > 0")
     # sl\nkey\n"<timeout> <limit> [<lease>]"\n
     arg = f"{acquire_timeout_s} {limit}"
     if lease_ttl_s is not None:
@@ -517,6 +520,8 @@ def sem_enqueue(
     Two-phase enqueue for semaphore: join FIFO queue, return immediately.
     Returns (status, token, lease) where status is "acquired" or "queued".
     """
+    if limit <= 0:
+        raise ValueError("limit must be > 0")
     arg = str(limit) if lease_ttl_s is None else f"{limit} {lease_ttl_s}"
     sock.sendall(encode_lines("se", key, arg))
 
