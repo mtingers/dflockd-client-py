@@ -281,11 +281,15 @@ class _SyncBase:
         if self._renew_thread is not None:
             self._stop_event.set()
             self._renew_thread.join(timeout=5)
-            if not self._renew_thread.is_alive():
-                self._renew_thread = None
+            if self._renew_thread.is_alive():
+                log.warning(
+                    "renew thread did not exit within 5s: key=%s", self.key
+                )
+            self._renew_thread = None
 
     def acquire(self) -> bool:
         sock, rfile = self._connect()
+        sock.settimeout(self.acquire_timeout_s + 30)
         try:
             self.token, self.lease = self._proto_acquire(sock, rfile)
         except TimeoutError:
@@ -294,6 +298,7 @@ class _SyncBase:
         except BaseException:
             self.close()
             raise
+        sock.settimeout(None)
         self._start_renew()
         return True
 
@@ -303,6 +308,7 @@ class _SyncBase:
         Starts renew loop on fast-path acquire.
         """
         sock, rfile = self._connect()
+        sock.settimeout(30)
         try:
             status, tok, lease = self._proto_enqueue(sock, rfile)
         except BaseException:
@@ -311,6 +317,7 @@ class _SyncBase:
         if status == "acquired":
             self.token = tok
             self.lease = lease or 0
+            sock.settimeout(None)
             self._start_renew()
         return status
 
@@ -325,6 +332,7 @@ class _SyncBase:
         if sock is None or rfile is None:
             raise RuntimeError("not connected; call enqueue() first")
         timeout = timeout_s if timeout_s is not None else self.acquire_timeout_s
+        sock.settimeout(timeout + 30)
         try:
             self.token, self.lease = self._proto_wait(sock, rfile, timeout)
         except TimeoutError:
@@ -333,6 +341,7 @@ class _SyncBase:
         except BaseException:
             self.close()
             raise
+        sock.settimeout(None)
         self._start_renew()
         return True
 
@@ -343,6 +352,7 @@ class _SyncBase:
             with self._io_lock:
                 sock, rfile = self._sock, self._rfile
                 if sock is not None and rfile is not None and self.token:
+                    sock.settimeout(30)
                     self._proto_release(sock, rfile, self.token)
                     released = True
         finally:
@@ -373,7 +383,11 @@ class _SyncBase:
                     finally:
                         sock.settimeout(old_timeout)
                 except Exception:
-                    if self._stop_event.is_set() or self._closed:
+                    if (
+                        self._stop_event.is_set()
+                        or self._closed
+                        or self._sock is not sock
+                    ):
                         return
                     log.error(
                         "%s lost (renew failed): key=%s token=%s",

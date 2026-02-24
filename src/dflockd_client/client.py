@@ -377,7 +377,11 @@ class _AsyncBase:
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    if self._closed or self._writer is None:
+                    if (
+                        self._closed
+                        or self._writer is None
+                        or self._writer is not writer
+                    ):
                         return
                     log.error(
                         "%s lost (renew failed): key=%s token=%s",
