@@ -3,12 +3,17 @@ import contextlib
 import json
 import ssl
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 
-from ._common import _MAX_LINE_LEN, StatsResult, encode_lines, log, parse_lease
+from ._common import (
+    _CONNECT_TIMEOUT_S,
+    _MAX_LINE_LEN,
+    StatsResult,
+    encode_lines,
+    log,
+    parse_lease,
+)
 from .sharding import DEFAULT_SERVERS, ShardingStrategy, stable_hash_shard
-
-_CONNECT_TIMEOUT_S = 10
 
 
 async def _readline(reader: asyncio.StreamReader) -> str:
@@ -18,6 +23,11 @@ async def _readline(reader: asyncio.StreamReader) -> str:
     if len(raw) > _MAX_LINE_LEN:
         raise RuntimeError(f"server response too large ({len(raw)} bytes)")
     return raw.decode("utf-8").rstrip("\r\n")
+
+
+# ===========================================================================
+# Lock protocol functions
+# ===========================================================================
 
 
 async def acquire(
@@ -153,9 +163,17 @@ async def stats(
         raise RuntimeError(f"bad stats response: {resp!r}") from e
 
 
+# ===========================================================================
+# Shared base class
+# ===========================================================================
+
+
 @dataclass
-class DistributedLock:
+class _AsyncBase:
+    """Shared lifecycle for async distributed lock/semaphore."""
+
     key: str
+    _: KW_ONLY
     acquire_timeout_s: int = 10
     lease_ttl_s: int | None = None  # if None, server default
     servers: list[tuple[str, int]] = field(
@@ -182,13 +200,45 @@ class DistributedLock:
         try:
             if self._writer is not None:
                 warnings.warn(
-                    f"DistributedLock(key={self.key!r}) was garbage collected without "
-                    "calling release() or aclose(). This leaks a connection.",
+                    f"{type(self).__name__}(key={self.key!r}) was garbage collected "
+                    "without calling release() or aclose(). This leaks a connection.",
                     ResourceWarning,
                     stacklevel=1,
                 )
         except Exception:
             pass
+
+    # --- protocol hooks (override in subclasses) ---
+
+    async def _proto_acquire(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> tuple[str, int]:
+        raise NotImplementedError
+
+    async def _proto_renew(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, token: str
+    ) -> int:
+        raise NotImplementedError
+
+    async def _proto_release(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, token: str
+    ) -> None:
+        raise NotImplementedError
+
+    async def _proto_enqueue(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> tuple[str, str | None, int | None]:
+        raise NotImplementedError
+
+    async def _proto_wait(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        timeout: int,
+    ) -> tuple[str, int]:
+        raise NotImplementedError
+
+    # --- shared lifecycle ---
 
     def _pick_server(self) -> tuple[str, int]:
         idx = self.sharding_strategy(self.key, len(self.servers))
@@ -224,20 +274,13 @@ class DistributedLock:
     async def acquire(self) -> bool:
         reader, writer = await self._connect()
         try:
-            self.token, self.lease = await acquire(
-                reader,
-                writer,
-                self.key,
-                self.acquire_timeout_s,
-                self.lease_ttl_s,
-            )
+            self.token, self.lease = await self._proto_acquire(reader, writer)
         except TimeoutError:
             await self.aclose()
             return False
         except BaseException:
             await self.aclose()
             raise
-        # Start renew loop
         self._renew_task = asyncio.create_task(self._renew_loop())
         return True
 
@@ -248,9 +291,7 @@ class DistributedLock:
         """
         reader, writer = await self._connect()
         try:
-            status, tok, lease = await enqueue(
-                reader, writer, self.key, self.lease_ttl_s
-            )
+            status, tok, lease = await self._proto_enqueue(reader, writer)
         except BaseException:
             await self.aclose()
             raise
@@ -262,7 +303,7 @@ class DistributedLock:
 
     async def wait(self, timeout_s: int | None = None) -> bool:
         """
-        Two-phase step 2: wait for lock grant. Returns True if granted, False on timeout.
+        Two-phase step 2: wait for grant. Returns True if granted, False on timeout.
         If already acquired (fast path from enqueue), returns immediately.
         """
         if self.token is not None:
@@ -272,8 +313,8 @@ class DistributedLock:
             raise RuntimeError("not connected; call enqueue() first")
         timeout = timeout_s if timeout_s is not None else self.acquire_timeout_s
         try:
-            self.token, self.lease = await wait(
-                self._reader, self._writer, self.key, timeout
+            self.token, self.lease = await self._proto_wait(
+                self._reader, self._writer, timeout
             )
         except TimeoutError:
             await self.aclose()
@@ -290,27 +331,15 @@ class DistributedLock:
             await self._cancel_renew()
 
             if self._reader and self._writer and self.token:
-                await release(self._reader, self._writer, self.key, self.token)
+                await self._proto_release(self._reader, self._writer, self.token)
                 released = True
         finally:
             await self.aclose()
         return released
 
     async def __aenter__(self):
-        reader, writer = await self._connect()
-        try:
-            self.token, self.lease = await acquire(
-                reader,
-                writer,
-                self.key,
-                self.acquire_timeout_s,
-                self.lease_ttl_s,
-            )
-        except BaseException:
-            await self.aclose()
-            raise
-        # Start renew loop
-        self._renew_task = asyncio.create_task(self._renew_loop())
+        if not await self.acquire():
+            raise TimeoutError(f"timeout acquiring {self.key!r}")
         return self
 
     async def _renew_loop(self):
@@ -320,18 +349,13 @@ class DistributedLock:
             while True:
                 await asyncio.sleep(interval)
                 try:
-                    await renew(
-                        self._reader,
-                        self._writer,
-                        self.key,
-                        self.token,
-                        self.lease_ttl_s,
-                    )
+                    await self._proto_renew(self._reader, self._writer, self.token)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     log.error(
-                        "lock lost (renew failed): key=%s token=%s",
+                        "%s lost (renew failed): key=%s token=%s",
+                        type(self).__name__,
                         self.key,
                         self.token,
                     )
@@ -346,7 +370,7 @@ class DistributedLock:
 
             if self._reader and self._writer and self.token:
                 with contextlib.suppress(Exception):
-                    await release(self._reader, self._writer, self.key, self.token)
+                    await self._proto_release(self._reader, self._writer, self.token)
         finally:
             await self.aclose()
 
@@ -364,6 +388,31 @@ class DistributedLock:
         self._reader = None
         self._writer = None
         self.token = None
+
+
+# ===========================================================================
+# DistributedLock
+# ===========================================================================
+
+
+@dataclass
+class DistributedLock(_AsyncBase):
+    async def _proto_acquire(self, reader, writer):
+        return await acquire(
+            reader, writer, self.key, self.acquire_timeout_s, self.lease_ttl_s
+        )
+
+    async def _proto_renew(self, reader, writer, token):
+        return await renew(reader, writer, self.key, token, self.lease_ttl_s)
+
+    async def _proto_release(self, reader, writer, token):
+        await release(reader, writer, self.key, token)
+
+    async def _proto_enqueue(self, reader, writer):
+        return await enqueue(reader, writer, self.key, self.lease_ttl_s)
+
+    async def _proto_wait(self, reader, writer, timeout):
+        return await wait(reader, writer, self.key, timeout)
 
 
 # ===========================================================================
@@ -491,214 +540,32 @@ async def sem_release(
 
 
 @dataclass
-class DistributedSemaphore:
-    key: str
-    limit: int
-    acquire_timeout_s: int = 10
-    lease_ttl_s: int | None = None
-    servers: list[tuple[str, int]] = field(
-        default_factory=lambda: list(DEFAULT_SERVERS)
-    )
-    sharding_strategy: ShardingStrategy = stable_hash_shard
-    renew_ratio: float = 0.5
-    ssl_context: ssl.SSLContext | None = None
-    auth_token: str | None = None
-    connect_timeout_s: float = _CONNECT_TIMEOUT_S
-
-    _reader: asyncio.StreamReader | None = field(default=None, init=False, repr=False)
-    _writer: asyncio.StreamWriter | None = field(default=None, init=False, repr=False)
-    token: str | None = field(default=None, init=False)
-    lease: int = field(default=0, init=False)
-    _renew_task: asyncio.Task | None = field(default=None, init=False, repr=False)
-    _closed: bool = field(default=False, init=False, repr=False)
+class DistributedSemaphore(_AsyncBase):
+    limit: int = 0
 
     def __post_init__(self):
-        if not self.servers:
-            raise ValueError("servers must be a non-empty list")
+        if self.limit <= 0:
+            raise ValueError("limit must be > 0")
+        super().__post_init__()
 
-    def __del__(self):
-        try:
-            if self._writer is not None:
-                warnings.warn(
-                    f"DistributedSemaphore(key={self.key!r}) was garbage collected without "
-                    "calling release() or aclose(). This leaks a connection.",
-                    ResourceWarning,
-                    stacklevel=1,
-                )
-        except Exception:
-            pass
-
-    def _pick_server(self) -> tuple[str, int]:
-        idx = self.sharding_strategy(self.key, len(self.servers))
-        return self.servers[idx]
-
-    async def _cancel_renew(self):
-        if self._renew_task is not None:
-            self._renew_task.cancel()
-            with contextlib.suppress(BaseException):
-                await self._renew_task
-            self._renew_task = None
-
-    async def _connect(
-        self,
-    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        await self._cancel_renew()
-        await self.aclose()
-        self._closed = False
-        host, port = self._pick_server()
-        self._reader, self._writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port, ssl=self.ssl_context),
-            timeout=self.connect_timeout_s,
+    async def _proto_acquire(self, reader, writer):
+        return await sem_acquire(
+            reader,
+            writer,
+            self.key,
+            self.acquire_timeout_s,
+            self.limit,
+            self.lease_ttl_s,
         )
-        if self.auth_token is not None:
-            self._writer.write(encode_lines("auth", "_", self.auth_token))
-            await self._writer.drain()
-            resp = await _readline(self._reader)
-            if resp != "ok":
-                await self.aclose()
-                raise PermissionError(f"authentication failed: {resp!r}")
-        return self._reader, self._writer
 
-    async def acquire(self) -> bool:
-        reader, writer = await self._connect()
-        try:
-            self.token, self.lease = await sem_acquire(
-                reader,
-                writer,
-                self.key,
-                self.acquire_timeout_s,
-                self.limit,
-                self.lease_ttl_s,
-            )
-        except TimeoutError:
-            await self.aclose()
-            return False
-        except BaseException:
-            await self.aclose()
-            raise
-        self._renew_task = asyncio.create_task(self._renew_loop())
-        return True
+    async def _proto_renew(self, reader, writer, token):
+        return await sem_renew(reader, writer, self.key, token, self.lease_ttl_s)
 
-    async def enqueue(self) -> str:
-        """
-        Two-phase step 1: connect and enqueue. Returns "acquired" or "queued".
-        Starts renew loop on fast-path acquire.
-        """
-        reader, writer = await self._connect()
-        try:
-            status, tok, lease = await sem_enqueue(
-                reader, writer, self.key, self.limit, self.lease_ttl_s
-            )
-        except BaseException:
-            await self.aclose()
-            raise
-        if status == "acquired":
-            self.token = tok
-            self.lease = lease or 0
-            self._renew_task = asyncio.create_task(self._renew_loop())
-        return status
+    async def _proto_release(self, reader, writer, token):
+        await sem_release(reader, writer, self.key, token)
 
-    async def wait(self, timeout_s: int | None = None) -> bool:
-        """
-        Two-phase step 2: wait for semaphore grant. Returns True if granted,
-        False on timeout. If already acquired (fast path from enqueue),
-        returns immediately.
-        """
-        if self.token is not None:
-            return True
-        if self._reader is None or self._writer is None:
-            raise RuntimeError("not connected; call enqueue() first")
-        timeout = timeout_s if timeout_s is not None else self.acquire_timeout_s
-        try:
-            self.token, self.lease = await sem_wait(
-                self._reader, self._writer, self.key, timeout
-            )
-        except TimeoutError:
-            await self.aclose()
-            return False
-        except BaseException:
-            await self.aclose()
-            raise
-        self._renew_task = asyncio.create_task(self._renew_loop())
-        return True
+    async def _proto_enqueue(self, reader, writer):
+        return await sem_enqueue(reader, writer, self.key, self.limit, self.lease_ttl_s)
 
-    async def release(self) -> bool:
-        released = False
-        try:
-            await self._cancel_renew()
-
-            if self._reader and self._writer and self.token:
-                await sem_release(self._reader, self._writer, self.key, self.token)
-                released = True
-        finally:
-            await self.aclose()
-        return released
-
-    async def __aenter__(self):
-        reader, writer = await self._connect()
-        try:
-            self.token, self.lease = await sem_acquire(
-                reader,
-                writer,
-                self.key,
-                self.acquire_timeout_s,
-                self.limit,
-                self.lease_ttl_s,
-            )
-        except BaseException:
-            await self.aclose()
-            raise
-        self._renew_task = asyncio.create_task(self._renew_loop())
-        return self
-
-    async def _renew_loop(self):
-        assert self._reader and self._writer and self.token
-        interval = max(1.0, self.lease * self.renew_ratio)
-        try:
-            while True:
-                await asyncio.sleep(interval)
-                try:
-                    await sem_renew(
-                        self._reader,
-                        self._writer,
-                        self.key,
-                        self.token,
-                        self.lease_ttl_s,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    log.error(
-                        "semaphore lost (renew failed): key=%s token=%s",
-                        self.key,
-                        self.token,
-                    )
-                    await self.aclose()
-                    return
-        except asyncio.CancelledError:
-            return
-
-    async def __aexit__(self, exc_type, exc, tb):
-        try:
-            await self._cancel_renew()
-
-            if self._reader and self._writer and self.token:
-                with contextlib.suppress(Exception):
-                    await sem_release(self._reader, self._writer, self.key, self.token)
-        finally:
-            await self.aclose()
-
-    async def aclose(self):
-        if self._closed:
-            return
-        self._closed = True
-        if self._writer:
-            try:
-                self._writer.close()
-            except Exception:
-                pass
-            with contextlib.suppress(Exception):
-                await self._writer.wait_closed()
-        self._reader = None
-        self._writer = None
-        self.token = None
+    async def _proto_wait(self, reader, writer, timeout):
+        return await sem_wait(reader, writer, self.key, timeout)

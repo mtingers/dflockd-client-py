@@ -4,22 +4,32 @@ import socket
 import ssl
 import threading
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from typing import TextIO
 
-from ._common import _MAX_LINE_LEN, StatsResult, encode_lines, log, parse_lease
+from ._common import (
+    _CONNECT_TIMEOUT_S,
+    _MAX_LINE_LEN,
+    StatsResult,
+    encode_lines,
+    log,
+    parse_lease,
+)
 from .sharding import DEFAULT_SERVERS, ShardingStrategy, stable_hash_shard
-
-_CONNECT_TIMEOUT_S = 10
 
 
 def _readline(rfile: TextIO) -> str:
-    raw = rfile.readline()
+    raw = rfile.readline(_MAX_LINE_LEN + 1)
     if raw == "":
         raise ConnectionError("server closed connection")
     if len(raw) > _MAX_LINE_LEN:
         raise RuntimeError(f"server response too large ({len(raw)} chars)")
     return raw.rstrip("\r\n")
+
+
+# ===========================================================================
+# Lock protocol functions
+# ===========================================================================
 
 
 def acquire(
@@ -140,9 +150,17 @@ def stats(sock: socket.socket, rfile: io.TextIOWrapper) -> StatsResult:
         raise RuntimeError(f"bad stats response: {resp!r}") from e
 
 
+# ===========================================================================
+# Shared base class
+# ===========================================================================
+
+
 @dataclass
-class DistributedLock:
+class _SyncBase:
+    """Shared lifecycle for sync distributed lock/semaphore."""
+
     key: str
+    _: KW_ONLY
     acquire_timeout_s: int = 10
     lease_ttl_s: int | None = None
     servers: list[tuple[str, int]] = field(
@@ -172,13 +190,42 @@ class DistributedLock:
         try:
             if self._sock is not None:
                 warnings.warn(
-                    f"DistributedLock(key={self.key!r}) was garbage collected without "
-                    "calling release() or close(). This leaks a connection.",
+                    f"{type(self).__name__}(key={self.key!r}) was garbage collected "
+                    "without calling release() or close(). This leaks a connection.",
                     ResourceWarning,
                     stacklevel=1,
                 )
         except Exception:
             pass
+
+    # --- protocol hooks (override in subclasses) ---
+
+    def _proto_acquire(
+        self, sock: socket.socket, rfile: io.TextIOWrapper
+    ) -> tuple[str, int]:
+        raise NotImplementedError
+
+    def _proto_renew(
+        self, sock: socket.socket, rfile: io.TextIOWrapper, token: str
+    ) -> int:
+        raise NotImplementedError
+
+    def _proto_release(
+        self, sock: socket.socket, rfile: io.TextIOWrapper, token: str
+    ) -> None:
+        raise NotImplementedError
+
+    def _proto_enqueue(
+        self, sock: socket.socket, rfile: io.TextIOWrapper
+    ) -> tuple[str, str | None, int | None]:
+        raise NotImplementedError
+
+    def _proto_wait(
+        self, sock: socket.socket, rfile: io.TextIOWrapper, timeout: int
+    ) -> tuple[str, int]:
+        raise NotImplementedError
+
+    # --- shared lifecycle ---
 
     def _pick_server(self) -> tuple[str, int]:
         idx = self.sharding_strategy(self.key, len(self.servers))
@@ -224,13 +271,7 @@ class DistributedLock:
         sock, rfile = self._sock, self._rfile
         assert sock is not None and rfile is not None
         try:
-            self.token, self.lease = acquire(
-                sock,
-                rfile,
-                self.key,
-                self.acquire_timeout_s,
-                self.lease_ttl_s,
-            )
+            self.token, self.lease = self._proto_acquire(sock, rfile)
         except TimeoutError:
             self.close()
             return False
@@ -249,7 +290,7 @@ class DistributedLock:
         sock, rfile = self._sock, self._rfile
         assert sock is not None and rfile is not None
         try:
-            status, tok, lease = enqueue(sock, rfile, self.key, self.lease_ttl_s)
+            status, tok, lease = self._proto_enqueue(sock, rfile)
         except BaseException:
             self.close()
             raise
@@ -261,7 +302,7 @@ class DistributedLock:
 
     def wait(self, timeout_s: int | None = None) -> bool:
         """
-        Two-phase step 2: wait for lock grant. Returns True if granted, False on timeout.
+        Two-phase step 2: wait for grant. Returns True if granted, False on timeout.
         If already acquired (fast path from enqueue), returns immediately.
         """
         if self.token is not None:
@@ -271,7 +312,7 @@ class DistributedLock:
             raise RuntimeError("not connected; call enqueue() first")
         timeout = timeout_s if timeout_s is not None else self.acquire_timeout_s
         try:
-            self.token, self.lease = wait(sock, rfile, self.key, timeout)
+            self.token, self.lease = self._proto_wait(sock, rfile, timeout)
         except TimeoutError:
             self.close()
             return False
@@ -287,28 +328,15 @@ class DistributedLock:
             self._stop_renew()
             sock, rfile = self._sock, self._rfile
             if sock is not None and rfile is not None and self.token:
-                release(sock, rfile, self.key, self.token)
+                self._proto_release(sock, rfile, self.token)
                 released = True
         finally:
             self.close()
         return released
 
     def __enter__(self):
-        self._connect()
-        sock, rfile = self._sock, self._rfile
-        assert sock is not None and rfile is not None
-        try:
-            self.token, self.lease = acquire(
-                sock,
-                rfile,
-                self.key,
-                self.acquire_timeout_s,
-                self.lease_ttl_s,
-            )
-        except BaseException:
-            self.close()
-            raise
-        self._start_renew()
+        if not self.acquire():
+            raise TimeoutError(f"timeout acquiring {self.key!r}")
         return self
 
     def _renew_loop(self):
@@ -319,12 +347,13 @@ class DistributedLock:
             if self._closed:
                 return
             try:
-                renew(sock, rfile, self.key, token, self.lease_ttl_s)
+                self._proto_renew(sock, rfile, token)
             except Exception:
                 if self._closed:
                     return
                 log.error(
-                    "lock lost (renew failed): key=%s token=%s",
+                    "%s lost (renew failed): key=%s token=%s",
+                    type(self).__name__,
                     self.key,
                     token,
                 )
@@ -337,7 +366,7 @@ class DistributedLock:
             sock, rfile = self._sock, self._rfile
             if sock is not None and rfile is not None and self.token:
                 try:
-                    release(sock, rfile, self.key, self.token)
+                    self._proto_release(sock, rfile, self.token)
                 except Exception:
                     pass
         finally:
@@ -361,6 +390,29 @@ class DistributedLock:
         self._rfile = None
         self._sock = None
         self.token = None
+
+
+# ===========================================================================
+# DistributedLock
+# ===========================================================================
+
+
+@dataclass
+class DistributedLock(_SyncBase):
+    def _proto_acquire(self, sock, rfile):
+        return acquire(sock, rfile, self.key, self.acquire_timeout_s, self.lease_ttl_s)
+
+    def _proto_renew(self, sock, rfile, token):
+        return renew(sock, rfile, self.key, token, self.lease_ttl_s)
+
+    def _proto_release(self, sock, rfile, token):
+        release(sock, rfile, self.key, token)
+
+    def _proto_enqueue(self, sock, rfile):
+        return enqueue(sock, rfile, self.key, self.lease_ttl_s)
+
+    def _proto_wait(self, sock, rfile, timeout):
+        return wait(sock, rfile, self.key, timeout)
 
 
 # ===========================================================================
@@ -483,229 +535,32 @@ def sem_release(
 
 
 @dataclass
-class DistributedSemaphore:
-    key: str
-    limit: int
-    acquire_timeout_s: int = 10
-    lease_ttl_s: int | None = None
-    servers: list[tuple[str, int]] = field(
-        default_factory=lambda: list(DEFAULT_SERVERS)
-    )
-    sharding_strategy: ShardingStrategy = stable_hash_shard
-    renew_ratio: float = 0.5
-    ssl_context: ssl.SSLContext | None = None
-    auth_token: str | None = None
-    connect_timeout_s: float = _CONNECT_TIMEOUT_S
-
-    _sock: socket.socket | None = field(default=None, init=False, repr=False)
-    _rfile: io.TextIOWrapper | None = field(default=None, init=False, repr=False)
-    token: str | None = field(default=None, init=False)
-    lease: int = field(default=0, init=False)
-    _renew_thread: threading.Thread | None = field(default=None, init=False, repr=False)
-    _stop_event: threading.Event = field(
-        default_factory=threading.Event, init=False, repr=False
-    )
-    _closed: bool = field(default=False, init=False, repr=False)
+class DistributedSemaphore(_SyncBase):
+    limit: int = 0
 
     def __post_init__(self):
-        if not self.servers:
-            raise ValueError("servers must be a non-empty list")
+        if self.limit <= 0:
+            raise ValueError("limit must be > 0")
+        super().__post_init__()
 
-    def __del__(self):
-        try:
-            if self._sock is not None:
-                warnings.warn(
-                    f"DistributedSemaphore(key={self.key!r}) was garbage collected without "
-                    "calling release() or close(). This leaks a connection.",
-                    ResourceWarning,
-                    stacklevel=1,
-                )
-        except Exception:
-            pass
+    def _proto_acquire(self, sock, rfile):
+        return sem_acquire(
+            sock,
+            rfile,
+            self.key,
+            self.acquire_timeout_s,
+            self.limit,
+            self.lease_ttl_s,
+        )
 
-    def _pick_server(self) -> tuple[str, int]:
-        idx = self.sharding_strategy(self.key, len(self.servers))
-        return self.servers[idx]
+    def _proto_renew(self, sock, rfile, token):
+        return sem_renew(sock, rfile, self.key, token, self.lease_ttl_s)
 
-    def _connect(self):
-        self._stop_renew()
-        self.close()
-        self._closed = False
-        self._stop_event.clear()
-        host, port = self._pick_server()
-        sock = socket.create_connection((host, port), timeout=self.connect_timeout_s)
-        try:
-            if self.ssl_context is not None:
-                sock = self.ssl_context.wrap_socket(sock, server_hostname=host)
-            sock.settimeout(None)
-            self._sock = sock
-            self._rfile = self._sock.makefile("r", encoding="utf-8")
-        except BaseException:
-            sock.close()
-            self._sock = None
-            self._rfile = None
-            raise
-        if self.auth_token is not None:
-            self._sock.sendall(encode_lines("auth", "_", self.auth_token))
-            resp = _readline(self._rfile)
-            if resp != "ok":
-                self.close()
-                raise PermissionError(f"authentication failed: {resp!r}")
+    def _proto_release(self, sock, rfile, token):
+        sem_release(sock, rfile, self.key, token)
 
-    def _start_renew(self):
-        self._renew_thread = threading.Thread(target=self._renew_loop, daemon=True)
-        self._renew_thread.start()
+    def _proto_enqueue(self, sock, rfile):
+        return sem_enqueue(sock, rfile, self.key, self.limit, self.lease_ttl_s)
 
-    def _stop_renew(self):
-        if self._renew_thread is not None:
-            self._stop_event.set()
-            self._renew_thread.join(timeout=5)
-            self._renew_thread = None
-
-    def acquire(self) -> bool:
-        self._connect()
-        sock, rfile = self._sock, self._rfile
-        assert sock is not None and rfile is not None
-        try:
-            self.token, self.lease = sem_acquire(
-                sock,
-                rfile,
-                self.key,
-                self.acquire_timeout_s,
-                self.limit,
-                self.lease_ttl_s,
-            )
-        except TimeoutError:
-            self.close()
-            return False
-        except BaseException:
-            self.close()
-            raise
-        self._start_renew()
-        return True
-
-    def enqueue(self) -> str:
-        """
-        Two-phase step 1: connect and enqueue. Returns "acquired" or "queued".
-        Starts renew loop on fast-path acquire.
-        """
-        self._connect()
-        sock, rfile = self._sock, self._rfile
-        assert sock is not None and rfile is not None
-        try:
-            status, tok, lease = sem_enqueue(
-                sock, rfile, self.key, self.limit, self.lease_ttl_s
-            )
-        except BaseException:
-            self.close()
-            raise
-        if status == "acquired":
-            self.token = tok
-            self.lease = lease or 0
-            self._start_renew()
-        return status
-
-    def wait(self, timeout_s: int | None = None) -> bool:
-        """
-        Two-phase step 2: wait for semaphore grant. Returns True if granted,
-        False on timeout. If already acquired (fast path from enqueue),
-        returns immediately.
-        """
-        if self.token is not None:
-            return True
-        sock, rfile = self._sock, self._rfile
-        if sock is None or rfile is None:
-            raise RuntimeError("not connected; call enqueue() first")
-        timeout = timeout_s if timeout_s is not None else self.acquire_timeout_s
-        try:
-            self.token, self.lease = sem_wait(sock, rfile, self.key, timeout)
-        except TimeoutError:
-            self.close()
-            return False
-        except BaseException:
-            self.close()
-            raise
-        self._start_renew()
-        return True
-
-    def release(self) -> bool:
-        released = False
-        try:
-            self._stop_renew()
-            sock, rfile = self._sock, self._rfile
-            if sock is not None and rfile is not None and self.token:
-                sem_release(sock, rfile, self.key, self.token)
-                released = True
-        finally:
-            self.close()
-        return released
-
-    def __enter__(self):
-        self._connect()
-        sock, rfile = self._sock, self._rfile
-        assert sock is not None and rfile is not None
-        try:
-            self.token, self.lease = sem_acquire(
-                sock,
-                rfile,
-                self.key,
-                self.acquire_timeout_s,
-                self.limit,
-                self.lease_ttl_s,
-            )
-        except BaseException:
-            self.close()
-            raise
-        self._start_renew()
-        return self
-
-    def _renew_loop(self):
-        sock, rfile, token = self._sock, self._rfile, self.token
-        assert sock is not None and rfile is not None and token is not None
-        interval = max(1.0, self.lease * self.renew_ratio)
-        while not self._stop_event.wait(interval):
-            if self._closed:
-                return
-            try:
-                sem_renew(sock, rfile, self.key, token, self.lease_ttl_s)
-            except Exception:
-                if self._closed:
-                    return
-                log.error(
-                    "semaphore lost (renew failed): key=%s token=%s",
-                    self.key,
-                    token,
-                )
-                self.close()
-                return
-
-    def __exit__(self, exc_type, exc, tb):
-        try:
-            self._stop_renew()
-            sock, rfile = self._sock, self._rfile
-            if sock is not None and rfile is not None and self.token:
-                try:
-                    sem_release(sock, rfile, self.key, self.token)
-                except Exception:
-                    pass
-        finally:
-            self.close()
-
-    def close(self):
-        if self._closed:
-            return
-        self._closed = True
-        self._stop_event.set()
-        if self._rfile:
-            try:
-                self._rfile.close()
-            except Exception:
-                pass
-        if self._sock:
-            try:
-                self._sock.close()
-            except Exception:
-                pass
-        self._rfile = None
-        self._sock = None
-        self.token = None
+    def _proto_wait(self, sock, rfile, timeout):
+        return sem_wait(sock, rfile, self.key, timeout)
