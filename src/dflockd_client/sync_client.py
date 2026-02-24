@@ -22,6 +22,13 @@ def _readline(rfile: io.TextIOWrapper) -> str:
     return raw.rstrip("\r\n")
 
 
+def _parse_lease(parts: list[str]) -> int:
+    try:
+        return int(parts[2]) if len(parts) >= 3 else 30
+    except ValueError:
+        return 30
+
+
 def acquire(
     sock: socket.socket,
     rfile: io.TextIOWrapper,
@@ -47,7 +54,7 @@ def acquire(
     if len(parts) < 2:
         raise RuntimeError(f"bad ok response: {resp!r}")
     token = parts[1]
-    lease = int(parts[2]) if len(parts) >= 3 else 30
+    lease = _parse_lease(parts)
     return token, lease
 
 
@@ -88,7 +95,7 @@ def enqueue(
     if resp.startswith("acquired "):
         parts = resp.split()
         token = parts[1]
-        lease = int(parts[2]) if len(parts) >= 3 else 30
+        lease = _parse_lease(parts)
         return ("acquired", token, lease)
     if resp == "queued":
         return ("queued", None, None)
@@ -115,7 +122,7 @@ def wait(
 
     parts = resp.split()
     token = parts[1]
-    lease = int(parts[2]) if len(parts) >= 3 else 30
+    lease = _parse_lease(parts)
     return token, lease
 
 
@@ -134,7 +141,10 @@ def stats(sock: socket.socket, rfile: io.TextIOWrapper) -> dict:
     if not resp.startswith("ok "):
         raise RuntimeError(f"stats failed: {resp!r}")
 
-    return json.loads(resp[3:])
+    try:
+        return json.loads(resp[3:])
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"bad stats response: {resp!r}") from e
 
 
 @dataclass
@@ -167,13 +177,22 @@ class DistributedLock:
         return self.servers[idx % len(self.servers)]
 
     def _connect(self):
+        self.close()
         self._closed = False
         self._stop_event.clear()
         host, port = self._pick_server()
-        self._sock = socket.create_connection((host, port))
-        if self.ssl_context is not None:
-            self._sock = self.ssl_context.wrap_socket(self._sock, server_hostname=host)
-        self._rfile = self._sock.makefile("r", encoding="utf-8")
+        sock = socket.create_connection((host, port), timeout=10)
+        try:
+            if self.ssl_context is not None:
+                sock = self.ssl_context.wrap_socket(sock, server_hostname=host)
+            sock.settimeout(None)
+            self._sock = sock
+            self._rfile = self._sock.makefile("r", encoding="utf-8")
+        except BaseException:
+            sock.close()
+            self._sock = None
+            self._rfile = None
+            raise
         if self.auth_token is not None:
             self._sock.sendall(_encode_lines("auth", "_", self.auth_token))
             resp = _readline(self._rfile)
@@ -292,9 +311,9 @@ class DistributedLock:
                 log.error(
                     "lock lost (renew failed): key=%s token=%s",
                     self.key,
-                    self.token,
+                    token,
                 )
-                self.token = None
+                self.close()
                 return
 
     def __exit__(self, exc_type, exc, tb):
@@ -355,7 +374,7 @@ def sem_acquire(
     if len(parts) < 2:
         raise RuntimeError(f"bad ok response: {resp!r}")
     token = parts[1]
-    lease = int(parts[2]) if len(parts) >= 3 else 30
+    lease = _parse_lease(parts)
     return token, lease
 
 
@@ -398,7 +417,7 @@ def sem_enqueue(
     if resp.startswith("acquired "):
         parts = resp.split()
         token = parts[1]
-        lease = int(parts[2]) if len(parts) >= 3 else 30
+        lease = _parse_lease(parts)
         return ("acquired", token, lease)
     if resp == "queued":
         return ("queued", None, None)
@@ -425,7 +444,7 @@ def sem_wait(
 
     parts = resp.split()
     token = parts[1]
-    lease = int(parts[2]) if len(parts) >= 3 else 30
+    lease = _parse_lease(parts)
     return token, lease
 
 
@@ -475,13 +494,22 @@ class DistributedSemaphore:
         return self.servers[idx % len(self.servers)]
 
     def _connect(self):
+        self.close()
         self._closed = False
         self._stop_event.clear()
         host, port = self._pick_server()
-        self._sock = socket.create_connection((host, port))
-        if self.ssl_context is not None:
-            self._sock = self.ssl_context.wrap_socket(self._sock, server_hostname=host)
-        self._rfile = self._sock.makefile("r", encoding="utf-8")
+        sock = socket.create_connection((host, port), timeout=10)
+        try:
+            if self.ssl_context is not None:
+                sock = self.ssl_context.wrap_socket(sock, server_hostname=host)
+            sock.settimeout(None)
+            self._sock = sock
+            self._rfile = self._sock.makefile("r", encoding="utf-8")
+        except BaseException:
+            sock.close()
+            self._sock = None
+            self._rfile = None
+            raise
         if self.auth_token is not None:
             self._sock.sendall(_encode_lines("auth", "_", self.auth_token))
             resp = _readline(self._rfile)
@@ -605,9 +633,9 @@ class DistributedSemaphore:
                 log.error(
                     "semaphore lost (renew failed): key=%s token=%s",
                     self.key,
-                    self.token,
+                    token,
                 )
-                self.token = None
+                self.close()
                 return
 
     def __exit__(self, exc_type, exc, tb):

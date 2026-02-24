@@ -21,6 +21,13 @@ async def _readline(reader: asyncio.StreamReader) -> str:
     return raw.decode("utf-8").rstrip("\r\n")
 
 
+def _parse_lease(parts: list[str]) -> int:
+    try:
+        return int(parts[2]) if len(parts) >= 3 else 30
+    except ValueError:
+        return 30
+
+
 async def acquire(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
@@ -49,7 +56,7 @@ async def acquire(
     if len(parts) < 2:
         raise RuntimeError(f"bad ok response: {resp!r}")
     token = parts[1]
-    lease = int(parts[2]) if len(parts) >= 3 else 30
+    lease = _parse_lease(parts)
     return token, lease
 
 
@@ -94,7 +101,7 @@ async def enqueue(
     if resp.startswith("acquired "):
         parts = resp.split()
         token = parts[1]
-        lease = int(parts[2]) if len(parts) >= 3 else 30
+        lease = _parse_lease(parts)
         return ("acquired", token, lease)
     if resp == "queued":
         return ("queued", None, None)
@@ -122,7 +129,7 @@ async def wait(
 
     parts = resp.split()
     token = parts[1]
-    lease = int(parts[2]) if len(parts) >= 3 else 30
+    lease = _parse_lease(parts)
     return token, lease
 
 
@@ -148,7 +155,10 @@ async def stats(
     if not resp.startswith("ok "):
         raise RuntimeError(f"stats failed: {resp!r}")
 
-    return json.loads(resp[3:])
+    try:
+        return json.loads(resp[3:])
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"bad stats response: {resp!r}") from e
 
 
 @dataclass
@@ -335,7 +345,10 @@ class DistributedLock:
             return
         self._closed = True
         if self._writer:
-            self._writer.close()
+            try:
+                self._writer.close()
+            except Exception:
+                pass
             with contextlib.suppress(Exception):
                 await self._writer.wait_closed()
         self._reader = None
@@ -374,7 +387,7 @@ async def sem_acquire(
     if len(parts) < 2:
         raise RuntimeError(f"bad ok response: {resp!r}")
     token = parts[1]
-    lease = int(parts[2]) if len(parts) >= 3 else 30
+    lease = _parse_lease(parts)
     return token, lease
 
 
@@ -419,7 +432,7 @@ async def sem_enqueue(
     if resp.startswith("acquired "):
         parts = resp.split()
         token = parts[1]
-        lease = int(parts[2]) if len(parts) >= 3 else 30
+        lease = _parse_lease(parts)
         return ("acquired", token, lease)
     if resp == "queued":
         return ("queued", None, None)
@@ -447,7 +460,7 @@ async def sem_wait(
 
     parts = resp.split()
     token = parts[1]
-    lease = int(parts[2]) if len(parts) >= 3 else 30
+    lease = _parse_lease(parts)
     return token, lease
 
 
@@ -652,7 +665,10 @@ class DistributedSemaphore:
             return
         self._closed = True
         if self._writer:
-            self._writer.close()
+            try:
+                self._writer.close()
+            except Exception:
+                pass
             with contextlib.suppress(Exception):
                 await self._writer.wait_closed()
         self._reader = None
