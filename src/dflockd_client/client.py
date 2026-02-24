@@ -383,7 +383,8 @@ class _AsyncBase:
         reader, writer, token = self._reader, self._writer, self.token
         if not (reader and writer and token):
             return
-        interval = max(1.0, self.lease * self.renew_ratio)
+        lease = self.lease if self.lease > 0 else 30
+        interval = max(1.0, lease * self.renew_ratio)
         try:
             while True:
                 await asyncio.sleep(interval)

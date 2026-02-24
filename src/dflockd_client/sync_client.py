@@ -252,9 +252,13 @@ class _SyncBase:
         self._stop_renew()
         self.close()
         # Reset for new connection. Order matters: close() sets both
-        # _closed and _stop_event, so clear them after close().
+        # _closed and _stop_event, so reset them after close().
+        # Create a *new* Event rather than clearing the old one so that
+        # any lingering renew thread (which still references the old,
+        # already-set event) exits cleanly instead of seeing a cleared
+        # event and potentially continuing.
         self._closed = False
-        self._stop_event.clear()
+        self._stop_event = threading.Event()
         host, port = self._pick_server()
         sock = socket.create_connection((host, port), timeout=self.connect_timeout_s)
         try:
@@ -387,7 +391,8 @@ class _SyncBase:
         if sock is None or rfile is None or token is None:
             return
         try:
-            interval = max(1.0, self.lease * self.renew_ratio)
+            lease = self.lease if self.lease > 0 else 30
+            interval = max(1.0, lease * self.renew_ratio)
             while not self._stop_event.wait(interval):
                 renew_failed = False
                 remaining = -1
