@@ -243,7 +243,7 @@ class _SyncBase:
         idx = self.sharding_strategy(self.key, len(self.servers))
         return self.servers[idx]
 
-    def _connect(self):
+    def _connect(self) -> tuple[socket.socket, io.TextIOWrapper]:
         self._stop_renew()
         self.close()
         self._closed = False
@@ -271,6 +271,7 @@ class _SyncBase:
             if resp != "ok":
                 self.close()
                 raise PermissionError(f"authentication failed: {resp!r}")
+        return self._sock, self._rfile
 
     def _start_renew(self):
         self._renew_thread = threading.Thread(target=self._renew_loop, daemon=True)
@@ -283,10 +284,7 @@ class _SyncBase:
             self._renew_thread = None
 
     def acquire(self) -> bool:
-        self._connect()
-        sock, rfile = self._sock, self._rfile
-        if sock is None or rfile is None:
-            raise RuntimeError("connection failed")
+        sock, rfile = self._connect()
         try:
             self.token, self.lease = self._proto_acquire(sock, rfile)
         except TimeoutError:
@@ -303,10 +301,7 @@ class _SyncBase:
         Two-phase step 1: connect and enqueue. Returns "acquired" or "queued".
         Starts renew loop on fast-path acquire.
         """
-        self._connect()
-        sock, rfile = self._sock, self._rfile
-        if sock is None or rfile is None:
-            raise RuntimeError("connection failed")
+        sock, rfile = self._connect()
         try:
             status, tok, lease = self._proto_enqueue(sock, rfile)
         except BaseException:
@@ -375,10 +370,7 @@ class _SyncBase:
                     try:
                         remaining = self._proto_renew(sock, rfile, token)
                     finally:
-                        try:
-                            sock.settimeout(old_timeout)
-                        except OSError:
-                            raise
+                        sock.settimeout(old_timeout)
                 except Exception:
                     if self._stop_event.is_set():
                         return
