@@ -102,6 +102,8 @@ async def enqueue(
     resp = await _readline(reader)
     if resp.startswith("acquired "):
         parts = resp.split()
+        if len(parts) < 2:
+            raise RuntimeError(f"bad acquired response: {resp!r}")
         token = parts[1]
         lease = parse_lease(parts)
         return ("acquired", token, lease)
@@ -130,6 +132,8 @@ async def wait(
         raise RuntimeError(f"wait failed: {resp!r}")
 
     parts = resp.split()
+    if len(parts) < 2:
+        raise RuntimeError(f"bad ok response: {resp!r}")
     token = parts[1]
     lease = parse_lease(parts)
     return token, lease
@@ -359,6 +363,8 @@ class _AsyncBase:
                 except asyncio.CancelledError:
                     raise
                 except Exception:
+                    if self._closed:
+                        return
                     log.error(
                         "%s lost (renew failed): key=%s token=%s",
                         type(self).__name__,
@@ -498,6 +504,8 @@ async def sem_enqueue(
     resp = await _readline(reader)
     if resp.startswith("acquired "):
         parts = resp.split()
+        if len(parts) < 2:
+            raise RuntimeError(f"bad acquired response: {resp!r}")
         token = parts[1]
         lease = parse_lease(parts)
         return ("acquired", token, lease)
@@ -526,6 +534,8 @@ async def sem_wait(
         raise RuntimeError(f"sem_wait failed: {resp!r}")
 
     parts = resp.split()
+    if len(parts) < 2:
+        raise RuntimeError(f"bad ok response: {resp!r}")
     token = parts[1]
     lease = parse_lease(parts)
     return token, lease
