@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.6.2] - 2026-02-24
+
+### Fixed
+
+- Sync client leaks socket when calling `acquire()`/`enqueue()` on an already-connected instance (missing `close()` before reconnect)
+- Sync client leaks raw socket when `wrap_socket()` or `makefile()` fails during `_connect()`
+- Sync renew loop leaves socket open on renewal failure (now calls `close()` instead of only clearing the token)
+- Async `aclose()` skips `wait_closed()` if `close()` raises (now each call is independently guarded)
+- Malformed server lease values cause unhandled `ValueError` (now falls back to default)
+- Malformed JSON in `stats()` response causes unhandled `JSONDecodeError` (now raises `RuntimeError`)
+
+### Added
+
+- Connect timeout (10 s) on sync `socket.create_connection()` to prevent blocking on unreachable hosts
+
+[v1.6.2]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.6.2
+
 ## [v1.6.1] - 2026-02-24
 
 ### Added
