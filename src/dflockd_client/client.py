@@ -217,6 +217,13 @@ class _AsyncBase:
                     ResourceWarning,
                     stacklevel=1,
                 )
+                # Best-effort cleanup: close the transport to release the FD.
+                # We can't await wait_closed() here, but transport.close() is
+                # synchronous and sufficient to free the underlying socket.
+                try:
+                    self._writer.close()
+                except Exception:
+                    pass
         except BaseException:
             pass
 
@@ -406,6 +413,8 @@ class _AsyncBase:
                     interval = max(1.0, remaining * self.renew_ratio)
         except asyncio.CancelledError:
             return
+        finally:
+            del reader, writer, token
 
     async def __aexit__(self, exc_type, exc, tb):
         with contextlib.suppress(Exception):
@@ -422,7 +431,7 @@ class _AsyncBase:
             except Exception:
                 pass
             with contextlib.suppress(Exception):
-                await self._writer.wait_closed()
+                await asyncio.wait_for(self._writer.wait_closed(), timeout=5)
         self._reader = None
         self._writer = None
         self.token = None

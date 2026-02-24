@@ -207,6 +207,11 @@ class _SyncBase:
                     ResourceWarning,
                     stacklevel=1,
                 )
+                # Best-effort cleanup: close socket to release the FD.
+                try:
+                    self._sock.close()
+                except Exception:
+                    pass
         except BaseException:
             pass
 
@@ -381,38 +386,41 @@ class _SyncBase:
         sock, rfile, token = self._sock, self._rfile, self.token
         if sock is None or rfile is None or token is None:
             return
-        interval = max(1.0, self.lease * self.renew_ratio)
-        while not self._stop_event.wait(interval):
-            renew_failed = False
-            remaining = -1
-            with self._io_lock:
-                if self._stop_event.is_set() or self._closed:
-                    return
-                try:
-                    old_timeout = sock.gettimeout()
-                    sock.settimeout(5)
-                    try:
-                        remaining = self._proto_renew(sock, rfile, token)
-                    finally:
-                        sock.settimeout(old_timeout)
-                except Exception:
-                    if (
-                        self._stop_event.is_set()
-                        or self._closed
-                        or self._sock is not sock
-                    ):
+        try:
+            interval = max(1.0, self.lease * self.renew_ratio)
+            while not self._stop_event.wait(interval):
+                renew_failed = False
+                remaining = -1
+                with self._io_lock:
+                    if self._stop_event.is_set() or self._closed:
                         return
-                    log.error(
-                        "%s lost (renew failed): key=%s token=%s",
-                        type(self).__name__,
-                        self.key,
-                        token,
-                    )
-                    renew_failed = True
-            if renew_failed:
-                return
-            if remaining > 0:
-                interval = max(1.0, remaining * self.renew_ratio)
+                    try:
+                        old_timeout = sock.gettimeout()
+                        sock.settimeout(5)
+                        try:
+                            remaining = self._proto_renew(sock, rfile, token)
+                        finally:
+                            sock.settimeout(old_timeout)
+                    except Exception:
+                        if (
+                            self._stop_event.is_set()
+                            or self._closed
+                            or self._sock is not sock
+                        ):
+                            return
+                        log.error(
+                            "%s lost (renew failed): key=%s token=%s",
+                            type(self).__name__,
+                            self.key,
+                            token,
+                        )
+                        renew_failed = True
+                if renew_failed:
+                    return
+                if remaining > 0:
+                    interval = max(1.0, remaining * self.renew_ratio)
+        finally:
+            del sock, rfile, token
 
     def __exit__(self, exc_type, exc, tb):
         try:
