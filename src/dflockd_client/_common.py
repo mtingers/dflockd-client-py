@@ -10,6 +10,9 @@ _CONNECT_TIMEOUT_S = 10
 
 
 def encode_lines(*lines: str) -> bytes:
+    for ln in lines:
+        if "\n" in ln or "\r" in ln:
+            raise ValueError(f"protocol argument must not contain newlines: {ln!r}")
     return ("".join(f"{ln}\n" for ln in lines)).encode("utf-8")
 
 

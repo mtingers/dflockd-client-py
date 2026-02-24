@@ -261,7 +261,9 @@ class _AsyncBase:
         self._closed = False
         host, port = self._pick_server()
         self._reader, self._writer = await asyncio.wait_for(
-            asyncio.open_connection(host, port, ssl=self.ssl_context),
+            asyncio.open_connection(
+                host, port, ssl=self.ssl_context, limit=_MAX_LINE_LEN
+            ),
             timeout=self.connect_timeout_s,
         )
         if self.auth_token is not None:
