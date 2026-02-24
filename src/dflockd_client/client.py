@@ -195,6 +195,8 @@ class _AsyncBase:
     def __post_init__(self):
         if not self.servers:
             raise ValueError("servers must be a non-empty list")
+        if not 0 < self.renew_ratio < 1:
+            raise ValueError("renew_ratio must be between 0 and 1 (exclusive)")
 
     def __del__(self):
         try:
@@ -349,7 +351,9 @@ class _AsyncBase:
             while True:
                 await asyncio.sleep(interval)
                 try:
-                    await self._proto_renew(self._reader, self._writer, self.token)
+                    remaining = await self._proto_renew(
+                        self._reader, self._writer, self.token
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -361,6 +365,8 @@ class _AsyncBase:
                     )
                     await self.aclose()
                     return
+                if remaining > 0:
+                    interval = max(1.0, remaining * self.renew_ratio)
         except asyncio.CancelledError:
             return
 

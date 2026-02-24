@@ -36,4 +36,4 @@ class TestStableHashShard:
 
 class TestDefaults:
     def test_default_servers(self):
-        assert DEFAULT_SERVERS == [("127.0.0.1", 6388)]
+        assert DEFAULT_SERVERS == (("127.0.0.1", 6388),)

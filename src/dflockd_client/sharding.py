@@ -5,7 +5,7 @@ from collections.abc import Callable
 
 ShardingStrategy = Callable[[str, int], int]
 
-DEFAULT_SERVERS: list[tuple[str, int]] = [("127.0.0.1", 6388)]
+DEFAULT_SERVERS: tuple[tuple[str, int], ...] = (("127.0.0.1", 6388),)
 
 
 def stable_hash_shard(key: str, num_servers: int) -> int:

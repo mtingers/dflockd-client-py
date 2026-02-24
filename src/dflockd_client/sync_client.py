@@ -185,6 +185,8 @@ class _SyncBase:
     def __post_init__(self):
         if not self.servers:
             raise ValueError("servers must be a non-empty list")
+        if not 0 < self.renew_ratio < 1:
+            raise ValueError("renew_ratio must be between 0 and 1 (exclusive)")
 
     def __del__(self):
         try:
@@ -347,7 +349,7 @@ class _SyncBase:
             if self._closed:
                 return
             try:
-                self._proto_renew(sock, rfile, token)
+                remaining = self._proto_renew(sock, rfile, token)
             except Exception:
                 if self._closed:
                     return
@@ -359,6 +361,8 @@ class _SyncBase:
                 )
                 self.close()
                 return
+            if remaining > 0:
+                interval = max(1.0, remaining * self.renew_ratio)
 
     def __exit__(self, exc_type, exc, tb):
         try:
