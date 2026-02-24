@@ -46,6 +46,7 @@ if lock.acquire():
 | `renew_ratio` | `float` | `0.5` | Renew at `lease * ratio` seconds |
 | `ssl_context` | `ssl.SSLContext \| None` | `None` | TLS context. `None` uses plain TCP |
 | `auth_token` | `str \| None` | `None` | Auth token for servers started with `--auth-token`. `None` skips auth |
+| `connect_timeout_s` | `float` | `10` | Seconds to wait for the TCP connection |
 
 ## Authentication
 
@@ -222,6 +223,7 @@ if sem.wait(timeout_s=10):
 | `renew_ratio` | `float` | `0.5` | Renew at `lease * ratio` seconds |
 | `ssl_context` | `ssl.SSLContext \| None` | `None` | TLS context. `None` uses plain TCP |
 | `auth_token` | `str \| None` | `None` | Auth token for servers started with `--auth-token`. `None` skips auth |
+| `connect_timeout_s` | `float` | `10` | Seconds to wait for the TCP connection |
 
 ### Semaphore low-level functions
 
@@ -257,7 +259,7 @@ rfile.close()
 sock.close()
 ```
 
-Returns a dict with:
+Returns a `StatsResult` TypedDict with:
 
 | Field | Type | Description |
 |---|---|---|

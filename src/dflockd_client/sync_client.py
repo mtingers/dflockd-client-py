@@ -1,32 +1,23 @@
 import io
 import json
-import logging
 import socket
 import ssl
 import threading
+import warnings
 from dataclasses import dataclass, field
+from typing import TextIO
 
+from ._common import StatsResult, encode_lines, log, parse_lease
 from .sharding import DEFAULT_SERVERS, ShardingStrategy, stable_hash_shard
 
-log = logging.getLogger("dflockd-client")
+_CONNECT_TIMEOUT_S = 10
 
 
-def _encode_lines(*lines: str) -> bytes:
-    return ("".join(f"{ln}\n" for ln in lines)).encode("utf-8")
-
-
-def _readline(rfile: io.TextIOWrapper) -> str:
+def _readline(rfile: TextIO) -> str:
     raw = rfile.readline()
     if raw == "":
         raise ConnectionError("server closed connection")
     return raw.rstrip("\r\n")
-
-
-def _parse_lease(parts: list[str]) -> int:
-    try:
-        return int(parts[2]) if len(parts) >= 3 else 30
-    except ValueError:
-        return 30
 
 
 def acquire(
@@ -42,7 +33,7 @@ def acquire(
         else f"{acquire_timeout_s} {lease_ttl_s}"
     )
 
-    sock.sendall(_encode_lines("l", key, arg))
+    sock.sendall(encode_lines("l", key, arg))
 
     resp = _readline(rfile)
     if resp == "timeout":
@@ -54,7 +45,7 @@ def acquire(
     if len(parts) < 2:
         raise RuntimeError(f"bad ok response: {resp!r}")
     token = parts[1]
-    lease = _parse_lease(parts)
+    lease = parse_lease(parts)
     return token, lease
 
 
@@ -66,10 +57,10 @@ def renew(
     lease_ttl_s: int | None = None,
 ) -> int:
     arg = token if lease_ttl_s is None else f"{token} {lease_ttl_s}"
-    sock.sendall(_encode_lines("n", key, arg))
+    sock.sendall(encode_lines("n", key, arg))
 
     resp = _readline(rfile)
-    if not resp.startswith("ok"):
+    if resp != "ok" and not resp.startswith("ok "):
         raise RuntimeError(f"renew failed: {resp!r}")
 
     parts = resp.split()
@@ -89,13 +80,13 @@ def enqueue(
     Returns (status, token, lease) where status is "acquired" or "queued".
     """
     arg = "" if lease_ttl_s is None else str(lease_ttl_s)
-    sock.sendall(_encode_lines("e", key, arg))
+    sock.sendall(encode_lines("e", key, arg))
 
     resp = _readline(rfile)
     if resp.startswith("acquired "):
         parts = resp.split()
         token = parts[1]
-        lease = _parse_lease(parts)
+        lease = parse_lease(parts)
         return ("acquired", token, lease)
     if resp == "queued":
         return ("queued", None, None)
@@ -112,7 +103,7 @@ def wait(
     Two-phase wait: block until lock is granted.
     Returns (token, lease). Raises TimeoutError on timeout.
     """
-    sock.sendall(_encode_lines("w", key, str(wait_timeout_s)))
+    sock.sendall(encode_lines("w", key, str(wait_timeout_s)))
 
     resp = _readline(rfile)
     if resp == "timeout":
@@ -122,20 +113,20 @@ def wait(
 
     parts = resp.split()
     token = parts[1]
-    lease = _parse_lease(parts)
+    lease = parse_lease(parts)
     return token, lease
 
 
 def release(sock: socket.socket, rfile: io.TextIOWrapper, key: str, token: str) -> None:
-    sock.sendall(_encode_lines("r", key, token))
+    sock.sendall(encode_lines("r", key, token))
 
     resp = _readline(rfile)
     if resp != "ok":
         raise RuntimeError(f"release failed: {resp!r}")
 
 
-def stats(sock: socket.socket, rfile: io.TextIOWrapper) -> dict:
-    sock.sendall(_encode_lines("stats", "_", ""))
+def stats(sock: socket.socket, rfile: io.TextIOWrapper) -> StatsResult:
+    sock.sendall(encode_lines("stats", "_", ""))
 
     resp = _readline(rfile)
     if not resp.startswith("ok "):
@@ -159,6 +150,7 @@ class DistributedLock:
     renew_ratio: float = 0.5
     ssl_context: ssl.SSLContext | None = None
     auth_token: str | None = None
+    connect_timeout_s: float = _CONNECT_TIMEOUT_S
 
     _sock: socket.socket | None = field(default=None, repr=False)
     _rfile: io.TextIOWrapper | None = field(default=None, repr=False)
@@ -172,16 +164,26 @@ class DistributedLock:
         if not self.servers:
             raise ValueError("servers must be a non-empty list")
 
+    def __del__(self):
+        if self._sock is not None:
+            warnings.warn(
+                f"DistributedLock(key={self.key!r}) was garbage collected without "
+                "calling release() or close(). This leaks a connection.",
+                ResourceWarning,
+                stacklevel=1,
+            )
+
     def _pick_server(self) -> tuple[str, int]:
         idx = self.sharding_strategy(self.key, len(self.servers))
-        return self.servers[idx % len(self.servers)]
+        return self.servers[idx]
 
     def _connect(self):
+        self._stop_renew()
         self.close()
         self._closed = False
         self._stop_event.clear()
         host, port = self._pick_server()
-        sock = socket.create_connection((host, port), timeout=10)
+        sock = socket.create_connection((host, port), timeout=self.connect_timeout_s)
         try:
             if self.ssl_context is not None:
                 sock = self.ssl_context.wrap_socket(sock, server_hostname=host)
@@ -194,7 +196,7 @@ class DistributedLock:
             self._rfile = None
             raise
         if self.auth_token is not None:
-            self._sock.sendall(_encode_lines("auth", "_", self.auth_token))
+            self._sock.sendall(encode_lines("auth", "_", self.auth_token))
             resp = _readline(self._rfile)
             if resp != "ok":
                 self.close()
@@ -305,9 +307,13 @@ class DistributedLock:
         assert sock is not None and rfile is not None and token is not None
         interval = max(1.0, self.lease * self.renew_ratio)
         while not self._stop_event.wait(interval):
+            if self._closed:
+                return
             try:
                 renew(sock, rfile, self.key, token, self.lease_ttl_s)
             except Exception:
+                if self._closed:
+                    return
                 log.error(
                     "lock lost (renew failed): key=%s token=%s",
                     self.key,
@@ -329,6 +335,7 @@ class DistributedLock:
         if self._closed:
             return
         self._closed = True
+        self._stop_event.set()
         if self._rfile:
             try:
                 self._rfile.close()
@@ -362,7 +369,7 @@ def sem_acquire(
     if lease_ttl_s is not None:
         arg = f"{arg} {lease_ttl_s}"
 
-    sock.sendall(_encode_lines("sl", key, arg))
+    sock.sendall(encode_lines("sl", key, arg))
 
     resp = _readline(rfile)
     if resp == "timeout":
@@ -374,7 +381,7 @@ def sem_acquire(
     if len(parts) < 2:
         raise RuntimeError(f"bad ok response: {resp!r}")
     token = parts[1]
-    lease = _parse_lease(parts)
+    lease = parse_lease(parts)
     return token, lease
 
 
@@ -387,10 +394,10 @@ def sem_renew(
 ) -> int:
     # sn\nkey\n"<token> [<lease>]"\n
     arg = token if lease_ttl_s is None else f"{token} {lease_ttl_s}"
-    sock.sendall(_encode_lines("sn", key, arg))
+    sock.sendall(encode_lines("sn", key, arg))
 
     resp = _readline(rfile)
-    if not resp.startswith("ok"):
+    if resp != "ok" and not resp.startswith("ok "):
         raise RuntimeError(f"sem_renew failed: {resp!r}")
 
     parts = resp.split()
@@ -411,13 +418,13 @@ def sem_enqueue(
     Returns (status, token, lease) where status is "acquired" or "queued".
     """
     arg = str(limit) if lease_ttl_s is None else f"{limit} {lease_ttl_s}"
-    sock.sendall(_encode_lines("se", key, arg))
+    sock.sendall(encode_lines("se", key, arg))
 
     resp = _readline(rfile)
     if resp.startswith("acquired "):
         parts = resp.split()
         token = parts[1]
-        lease = _parse_lease(parts)
+        lease = parse_lease(parts)
         return ("acquired", token, lease)
     if resp == "queued":
         return ("queued", None, None)
@@ -434,7 +441,7 @@ def sem_wait(
     Two-phase wait for semaphore: block until semaphore slot is granted.
     Returns (token, lease). Raises TimeoutError on timeout.
     """
-    sock.sendall(_encode_lines("sw", key, str(wait_timeout_s)))
+    sock.sendall(encode_lines("sw", key, str(wait_timeout_s)))
 
     resp = _readline(rfile)
     if resp == "timeout":
@@ -444,14 +451,14 @@ def sem_wait(
 
     parts = resp.split()
     token = parts[1]
-    lease = _parse_lease(parts)
+    lease = parse_lease(parts)
     return token, lease
 
 
 def sem_release(
     sock: socket.socket, rfile: io.TextIOWrapper, key: str, token: str
 ) -> None:
-    sock.sendall(_encode_lines("sr", key, token))
+    sock.sendall(encode_lines("sr", key, token))
 
     resp = _readline(rfile)
     if resp != "ok":
@@ -476,6 +483,7 @@ class DistributedSemaphore:
     renew_ratio: float = 0.5
     ssl_context: ssl.SSLContext | None = None
     auth_token: str | None = None
+    connect_timeout_s: float = _CONNECT_TIMEOUT_S
 
     _sock: socket.socket | None = field(default=None, repr=False)
     _rfile: io.TextIOWrapper | None = field(default=None, repr=False)
@@ -489,16 +497,26 @@ class DistributedSemaphore:
         if not self.servers:
             raise ValueError("servers must be a non-empty list")
 
+    def __del__(self):
+        if self._sock is not None:
+            warnings.warn(
+                f"DistributedSemaphore(key={self.key!r}) was garbage collected without "
+                "calling release() or close(). This leaks a connection.",
+                ResourceWarning,
+                stacklevel=1,
+            )
+
     def _pick_server(self) -> tuple[str, int]:
         idx = self.sharding_strategy(self.key, len(self.servers))
-        return self.servers[idx % len(self.servers)]
+        return self.servers[idx]
 
     def _connect(self):
+        self._stop_renew()
         self.close()
         self._closed = False
         self._stop_event.clear()
         host, port = self._pick_server()
-        sock = socket.create_connection((host, port), timeout=10)
+        sock = socket.create_connection((host, port), timeout=self.connect_timeout_s)
         try:
             if self.ssl_context is not None:
                 sock = self.ssl_context.wrap_socket(sock, server_hostname=host)
@@ -511,7 +529,7 @@ class DistributedSemaphore:
             self._rfile = None
             raise
         if self.auth_token is not None:
-            self._sock.sendall(_encode_lines("auth", "_", self.auth_token))
+            self._sock.sendall(encode_lines("auth", "_", self.auth_token))
             resp = _readline(self._rfile)
             if resp != "ok":
                 self.close()
@@ -627,9 +645,13 @@ class DistributedSemaphore:
         assert sock is not None and rfile is not None and token is not None
         interval = max(1.0, self.lease * self.renew_ratio)
         while not self._stop_event.wait(interval):
+            if self._closed:
+                return
             try:
                 sem_renew(sock, rfile, self.key, token, self.lease_ttl_s)
             except Exception:
+                if self._closed:
+                    return
                 log.error(
                     "semaphore lost (renew failed): key=%s token=%s",
                     self.key,
@@ -651,6 +673,7 @@ class DistributedSemaphore:
         if self._closed:
             return
         self._closed = True
+        self._stop_event.set()
         if self._rfile:
             try:
                 self._rfile.close()

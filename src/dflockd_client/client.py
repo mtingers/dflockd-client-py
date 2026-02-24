@@ -1,17 +1,14 @@
 import asyncio
 import contextlib
 import json
-import logging
 import ssl
+import warnings
 from dataclasses import dataclass, field
 
+from ._common import StatsResult, encode_lines, log, parse_lease
 from .sharding import DEFAULT_SERVERS, ShardingStrategy, stable_hash_shard
 
-log = logging.getLogger("dflockd-client")
-
-
-def _encode_lines(*lines: str) -> bytes:
-    return ("".join(f"{ln}\n" for ln in lines)).encode("utf-8")
+_CONNECT_TIMEOUT_S = 10
 
 
 async def _readline(reader: asyncio.StreamReader) -> str:
@@ -19,13 +16,6 @@ async def _readline(reader: asyncio.StreamReader) -> str:
     if raw == b"":
         raise ConnectionError("server closed connection")
     return raw.decode("utf-8").rstrip("\r\n")
-
-
-def _parse_lease(parts: list[str]) -> int:
-    try:
-        return int(parts[2]) if len(parts) >= 3 else 30
-    except ValueError:
-        return 30
 
 
 async def acquire(
@@ -42,7 +32,7 @@ async def acquire(
         else f"{acquire_timeout_s} {lease_ttl_s}"
     )
 
-    writer.write(_encode_lines("l", key, arg))
+    writer.write(encode_lines("l", key, arg))
     await writer.drain()
 
     resp = await _readline(reader)
@@ -56,7 +46,7 @@ async def acquire(
     if len(parts) < 2:
         raise RuntimeError(f"bad ok response: {resp!r}")
     token = parts[1]
-    lease = _parse_lease(parts)
+    lease = parse_lease(parts)
     return token, lease
 
 
@@ -69,11 +59,11 @@ async def renew(
 ) -> int:
     # n\nkey\n"<token> [<lease>]"\n
     arg = token if lease_ttl_s is None else f"{token} {lease_ttl_s}"
-    writer.write(_encode_lines("n", key, arg))
+    writer.write(encode_lines("n", key, arg))
     await writer.drain()
 
     resp = await _readline(reader)
-    if not resp.startswith("ok"):
+    if resp != "ok" and not resp.startswith("ok "):
         raise RuntimeError(f"renew failed: {resp!r}")
 
     # ok <seconds_remaining> (optional)
@@ -94,14 +84,14 @@ async def enqueue(
     Returns (status, token, lease) where status is "acquired" or "queued".
     """
     arg = "" if lease_ttl_s is None else str(lease_ttl_s)
-    writer.write(_encode_lines("e", key, arg))
+    writer.write(encode_lines("e", key, arg))
     await writer.drain()
 
     resp = await _readline(reader)
     if resp.startswith("acquired "):
         parts = resp.split()
         token = parts[1]
-        lease = _parse_lease(parts)
+        lease = parse_lease(parts)
         return ("acquired", token, lease)
     if resp == "queued":
         return ("queued", None, None)
@@ -118,7 +108,7 @@ async def wait(
     Two-phase wait: block until lock is granted.
     Returns (token, lease). Raises TimeoutError on timeout.
     """
-    writer.write(_encode_lines("w", key, str(wait_timeout_s)))
+    writer.write(encode_lines("w", key, str(wait_timeout_s)))
     await writer.drain()
 
     resp = await _readline(reader)
@@ -129,14 +119,14 @@ async def wait(
 
     parts = resp.split()
     token = parts[1]
-    lease = _parse_lease(parts)
+    lease = parse_lease(parts)
     return token, lease
 
 
 async def release(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter, key: str, token: str
 ) -> None:
-    writer.write(_encode_lines("r", key, token))
+    writer.write(encode_lines("r", key, token))
     await writer.drain()
 
     resp = await _readline(reader)
@@ -147,8 +137,8 @@ async def release(
 async def stats(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
-) -> dict:
-    writer.write(_encode_lines("stats", "_", ""))
+) -> StatsResult:
+    writer.write(encode_lines("stats", "_", ""))
     await writer.drain()
 
     resp = await _readline(reader)
@@ -173,6 +163,7 @@ class DistributedLock:
     renew_ratio: float = 0.5  # renew at lease * ratio
     ssl_context: ssl.SSLContext | None = None
     auth_token: str | None = None
+    connect_timeout_s: float = _CONNECT_TIMEOUT_S
 
     _reader: asyncio.StreamReader | None = None
     _writer: asyncio.StreamWriter | None = None
@@ -185,21 +176,39 @@ class DistributedLock:
         if not self.servers:
             raise ValueError("servers must be a non-empty list")
 
+    def __del__(self):
+        if self._writer is not None:
+            warnings.warn(
+                f"DistributedLock(key={self.key!r}) was garbage collected without "
+                "calling release() or aclose(). This leaks a connection.",
+                ResourceWarning,
+                stacklevel=1,
+            )
+
     def _pick_server(self) -> tuple[str, int]:
         idx = self.sharding_strategy(self.key, len(self.servers))
-        return self.servers[idx % len(self.servers)]
+        return self.servers[idx]
+
+    async def _cancel_renew(self):
+        if self._renew_task is not None:
+            self._renew_task.cancel()
+            with contextlib.suppress(BaseException):
+                await self._renew_task
+            self._renew_task = None
 
     async def _connect(
         self,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        await self._cancel_renew()
         await self.aclose()
         self._closed = False
         host, port = self._pick_server()
-        self._reader, self._writer = await asyncio.open_connection(
-            host, port, ssl=self.ssl_context
+        self._reader, self._writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port, ssl=self.ssl_context),
+            timeout=self.connect_timeout_s,
         )
         if self.auth_token is not None:
-            self._writer.write(_encode_lines("auth", "_", self.auth_token))
+            self._writer.write(encode_lines("auth", "_", self.auth_token))
             await self._writer.drain()
             resp = await _readline(self._reader)
             if resp != "ok":
@@ -272,10 +281,7 @@ class DistributedLock:
 
     async def release(self) -> bool:
         try:
-            if self._renew_task:
-                self._renew_task.cancel()
-                with contextlib.suppress(BaseException):
-                    await self._renew_task
+            await self._cancel_renew()
 
             if self._reader and self._writer and self.token:
                 await release(self._reader, self._writer, self.key, self.token)
@@ -329,10 +335,7 @@ class DistributedLock:
 
     async def __aexit__(self, exc_type, exc, tb):
         try:
-            if self._renew_task:
-                self._renew_task.cancel()
-                with contextlib.suppress(BaseException):
-                    await self._renew_task
+            await self._cancel_renew()
 
             if self._reader and self._writer and self.token:
                 with contextlib.suppress(Exception):
@@ -374,7 +377,7 @@ async def sem_acquire(
     if lease_ttl_s is not None:
         arg = f"{arg} {lease_ttl_s}"
 
-    writer.write(_encode_lines("sl", key, arg))
+    writer.write(encode_lines("sl", key, arg))
     await writer.drain()
 
     resp = await _readline(reader)
@@ -387,7 +390,7 @@ async def sem_acquire(
     if len(parts) < 2:
         raise RuntimeError(f"bad ok response: {resp!r}")
     token = parts[1]
-    lease = _parse_lease(parts)
+    lease = parse_lease(parts)
     return token, lease
 
 
@@ -400,11 +403,11 @@ async def sem_renew(
 ) -> int:
     # sn\nkey\n"<token> [<lease>]"\n
     arg = token if lease_ttl_s is None else f"{token} {lease_ttl_s}"
-    writer.write(_encode_lines("sn", key, arg))
+    writer.write(encode_lines("sn", key, arg))
     await writer.drain()
 
     resp = await _readline(reader)
-    if not resp.startswith("ok"):
+    if resp != "ok" and not resp.startswith("ok "):
         raise RuntimeError(f"sem_renew failed: {resp!r}")
 
     parts = resp.split()
@@ -425,14 +428,14 @@ async def sem_enqueue(
     Returns (status, token, lease) where status is "acquired" or "queued".
     """
     arg = str(limit) if lease_ttl_s is None else f"{limit} {lease_ttl_s}"
-    writer.write(_encode_lines("se", key, arg))
+    writer.write(encode_lines("se", key, arg))
     await writer.drain()
 
     resp = await _readline(reader)
     if resp.startswith("acquired "):
         parts = resp.split()
         token = parts[1]
-        lease = _parse_lease(parts)
+        lease = parse_lease(parts)
         return ("acquired", token, lease)
     if resp == "queued":
         return ("queued", None, None)
@@ -449,7 +452,7 @@ async def sem_wait(
     Two-phase wait for semaphore: block until semaphore slot is granted.
     Returns (token, lease). Raises TimeoutError on timeout.
     """
-    writer.write(_encode_lines("sw", key, str(wait_timeout_s)))
+    writer.write(encode_lines("sw", key, str(wait_timeout_s)))
     await writer.drain()
 
     resp = await _readline(reader)
@@ -460,14 +463,14 @@ async def sem_wait(
 
     parts = resp.split()
     token = parts[1]
-    lease = _parse_lease(parts)
+    lease = parse_lease(parts)
     return token, lease
 
 
 async def sem_release(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter, key: str, token: str
 ) -> None:
-    writer.write(_encode_lines("sr", key, token))
+    writer.write(encode_lines("sr", key, token))
     await writer.drain()
 
     resp = await _readline(reader)
@@ -493,6 +496,7 @@ class DistributedSemaphore:
     renew_ratio: float = 0.5
     ssl_context: ssl.SSLContext | None = None
     auth_token: str | None = None
+    connect_timeout_s: float = _CONNECT_TIMEOUT_S
 
     _reader: asyncio.StreamReader | None = None
     _writer: asyncio.StreamWriter | None = None
@@ -505,21 +509,39 @@ class DistributedSemaphore:
         if not self.servers:
             raise ValueError("servers must be a non-empty list")
 
+    def __del__(self):
+        if self._writer is not None:
+            warnings.warn(
+                f"DistributedSemaphore(key={self.key!r}) was garbage collected without "
+                "calling release() or aclose(). This leaks a connection.",
+                ResourceWarning,
+                stacklevel=1,
+            )
+
     def _pick_server(self) -> tuple[str, int]:
         idx = self.sharding_strategy(self.key, len(self.servers))
-        return self.servers[idx % len(self.servers)]
+        return self.servers[idx]
+
+    async def _cancel_renew(self):
+        if self._renew_task is not None:
+            self._renew_task.cancel()
+            with contextlib.suppress(BaseException):
+                await self._renew_task
+            self._renew_task = None
 
     async def _connect(
         self,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        await self._cancel_renew()
         await self.aclose()
         self._closed = False
         host, port = self._pick_server()
-        self._reader, self._writer = await asyncio.open_connection(
-            host, port, ssl=self.ssl_context
+        self._reader, self._writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port, ssl=self.ssl_context),
+            timeout=self.connect_timeout_s,
         )
         if self.auth_token is not None:
-            self._writer.write(_encode_lines("auth", "_", self.auth_token))
+            self._writer.write(encode_lines("auth", "_", self.auth_token))
             await self._writer.drain()
             resp = await _readline(self._reader)
             if resp != "ok":
@@ -592,10 +614,7 @@ class DistributedSemaphore:
 
     async def release(self) -> bool:
         try:
-            if self._renew_task:
-                self._renew_task.cancel()
-                with contextlib.suppress(BaseException):
-                    await self._renew_task
+            await self._cancel_renew()
 
             if self._reader and self._writer and self.token:
                 await sem_release(self._reader, self._writer, self.key, self.token)
@@ -649,10 +668,7 @@ class DistributedSemaphore:
 
     async def __aexit__(self, exc_type, exc, tb):
         try:
-            if self._renew_task:
-                self._renew_task.cancel()
-                with contextlib.suppress(BaseException):
-                    await self._renew_task
+            await self._cancel_renew()
 
             if self._reader and self._writer and self.token:
                 with contextlib.suppress(Exception):

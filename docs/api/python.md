@@ -15,6 +15,7 @@ class DistributedLock:
     renew_ratio: float = 0.5
     ssl_context: ssl.SSLContext | None = None
     auth_token: str | None = None
+    connect_timeout_s: float = 10
 ```
 
 **Methods:**
@@ -111,10 +112,10 @@ Two-phase step 2: block until lock is granted. Returns `(token, lease)`. Raises 
 async def stats(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
-) -> dict
+) -> StatsResult
 ```
 
-Query server state. Returns a dict with `connections` (int), `locks` (list), `semaphores` (list), `idle_locks` (list), and `idle_semaphores` (list). Raises `RuntimeError` on failure.
+Query server state. Returns a `StatsResult` TypedDict with `connections` (int), `locks` (list), `semaphores` (list), `idle_locks` (list), and `idle_semaphores` (list). Raises `RuntimeError` on failure.
 
 ### DistributedSemaphore
 
@@ -130,6 +131,7 @@ class DistributedSemaphore:
     renew_ratio: float = 0.5
     ssl_context: ssl.SSLContext | None = None
     auth_token: str | None = None
+    connect_timeout_s: float = 10
 ```
 
 **Methods:**
@@ -235,6 +237,7 @@ class DistributedLock:
     renew_ratio: float = 0.5
     ssl_context: ssl.SSLContext | None = None
     auth_token: str | None = None
+    connect_timeout_s: float = 10
 ```
 
 **Methods:**
@@ -323,10 +326,10 @@ Two-phase step 2: block until lock is granted. Returns `(token, lease)`. Raises 
 def stats(
     sock: socket.socket,
     rfile: io.TextIOWrapper,
-) -> dict
+) -> StatsResult
 ```
 
-Query server state. Returns a dict with `connections` (int), `locks` (list), `semaphores` (list), `idle_locks` (list), and `idle_semaphores` (list). Raises `RuntimeError` on failure.
+Query server state. Returns a `StatsResult` TypedDict with `connections` (int), `locks` (list), `semaphores` (list), `idle_locks` (list), and `idle_semaphores` (list). Raises `RuntimeError` on failure.
 
 ### DistributedSemaphore
 
@@ -342,6 +345,7 @@ class DistributedSemaphore:
     renew_ratio: float = 0.5
     ssl_context: ssl.SSLContext | None = None
     auth_token: str | None = None
+    connect_timeout_s: float = 10
 ```
 
 **Methods:**

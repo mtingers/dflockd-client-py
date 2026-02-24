@@ -17,8 +17,8 @@ import dflockd_client.sync_client as sc
 # ---------------------------------------------------------------------------
 
 
-def _connect(port: int) -> tuple[socket.socket, io.TextIOWrapper]:
-    sock = socket.create_connection(("127.0.0.1", port))
+def _connect(host: str, port: int) -> tuple[socket.socket, io.TextIOWrapper]:
+    sock = socket.create_connection((host, port))
     rfile = sock.makefile("r", encoding="utf-8")
     return sock, rfile
 
@@ -35,16 +35,16 @@ def _close(sock: socket.socket, rfile: io.TextIOWrapper) -> None:
 
 class TestEncodeLines:
     def test_single_line(self):
-        assert sc._encode_lines("hello") == b"hello\n"
+        assert sc.encode_lines("hello") == b"hello\n"
 
     def test_multiple_lines(self):
-        assert sc._encode_lines("a", "b", "c") == b"a\nb\nc\n"
+        assert sc.encode_lines("a", "b", "c") == b"a\nb\nc\n"
 
     def test_empty_string(self):
-        assert sc._encode_lines("") == b"\n"
+        assert sc.encode_lines("") == b"\n"
 
     def test_unicode(self):
-        result = sc._encode_lines("caf\u00e9")
+        result = sc.encode_lines("caf\u00e9")
         assert result == "caf\u00e9\n".encode("utf-8")
 
 
@@ -99,9 +99,11 @@ class TestDistributedLockDefaults:
 
 
 class TestAcquireRelease:
-    async def test_basic_cycle(self, server_port):
+    async def test_basic_cycle(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 token, lease = sc.acquire(sock, rfile, "k1", 5)
                 assert isinstance(token, str) and len(token) > 0
@@ -112,9 +114,11 @@ class TestAcquireRelease:
 
         await asyncio.to_thread(_work)
 
-    async def test_acquire_with_custom_lease(self, server_port):
+    async def test_acquire_with_custom_lease(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 token, lease = sc.acquire(sock, rfile, "k1", 5, lease_ttl_s=20)
                 assert lease == 20
@@ -124,12 +128,13 @@ class TestAcquireRelease:
 
         await asyncio.to_thread(_work)
 
-    async def test_acquire_timeout(self, server_port):
+    async def test_acquire_timeout(self, server_host_port):
         """Second acquire on same key with timeout=0 should raise TimeoutError."""
+        host, port = server_host_port
 
         def _work():
-            s1, r1 = _connect(server_port)
-            s2, r2 = _connect(server_port)
+            s1, r1 = _connect(host, port)
+            s2, r2 = _connect(host, port)
             try:
                 sc.acquire(s1, r1, "k1", 5)
                 with pytest.raises(TimeoutError):
@@ -140,9 +145,11 @@ class TestAcquireRelease:
 
         await asyncio.to_thread(_work)
 
-    async def test_release_bad_token(self, server_port):
+    async def test_release_bad_token(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 sc.acquire(sock, rfile, "k1", 5)
                 with pytest.raises(RuntimeError, match="release failed"):
@@ -152,9 +159,11 @@ class TestAcquireRelease:
 
         await asyncio.to_thread(_work)
 
-    async def test_release_nonexistent_key(self, server_port):
+    async def test_release_nonexistent_key(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 with pytest.raises(RuntimeError, match="release failed"):
                     sc.release(sock, rfile, "nokey", "notoken")
@@ -163,11 +172,12 @@ class TestAcquireRelease:
 
         await asyncio.to_thread(_work)
 
-    async def test_multiple_keys(self, server_port):
+    async def test_multiple_keys(self, server_host_port):
         """Acquire different keys on the same connection sequentially."""
+        host, port = server_host_port
 
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 t1, _ = sc.acquire(sock, rfile, "k1", 5)
                 t2, _ = sc.acquire(sock, rfile, "k2", 5)
@@ -181,9 +191,11 @@ class TestAcquireRelease:
 
 
 class TestRenew:
-    async def test_renew_returns_remaining(self, server_port):
+    async def test_renew_returns_remaining(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 token, _ = sc.acquire(sock, rfile, "k1", 5, lease_ttl_s=10)
                 remaining = sc.renew(sock, rfile, "k1", token, lease_ttl_s=20)
@@ -193,9 +205,11 @@ class TestRenew:
 
         await asyncio.to_thread(_work)
 
-    async def test_renew_default_lease(self, server_port):
+    async def test_renew_default_lease(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 token, _ = sc.acquire(sock, rfile, "k1", 5)
                 remaining = sc.renew(sock, rfile, "k1", token)
@@ -205,9 +219,11 @@ class TestRenew:
 
         await asyncio.to_thread(_work)
 
-    async def test_renew_bad_token(self, server_port):
+    async def test_renew_bad_token(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 sc.acquire(sock, rfile, "k1", 5)
                 with pytest.raises(RuntimeError, match="renew failed"):
@@ -217,9 +233,11 @@ class TestRenew:
 
         await asyncio.to_thread(_work)
 
-    async def test_renew_nonexistent_key(self, server_port):
+    async def test_renew_nonexistent_key(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 with pytest.raises(RuntimeError, match="renew failed"):
                     sc.renew(sock, rfile, "nokey", "notoken")
@@ -235,10 +253,12 @@ class TestRenew:
 
 
 class TestDistributedLockContextManager:
-    async def test_basic_lifecycle(self, server_port):
+    async def test_basic_lifecycle(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
             lock = sc.DistributedLock(
-                key="k1", acquire_timeout_s=5, servers=[("127.0.0.1", server_port)]
+                key="k1", acquire_timeout_s=5, servers=[(host, port)]
             )
             with lock as lk:
                 assert lk is lock
@@ -249,25 +269,28 @@ class TestDistributedLockContextManager:
 
         await asyncio.to_thread(_work)
 
-    async def test_custom_lease(self, server_port):
+    async def test_custom_lease(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
             lock = sc.DistributedLock(
                 key="k1",
                 acquire_timeout_s=5,
                 lease_ttl_s=15,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             with lock:
                 assert lock.lease == 15
 
         await asyncio.to_thread(_work)
 
-    async def test_exception_inside_context(self, server_port):
+    async def test_exception_inside_context(self, server_host_port):
         """Lock is released even if an exception is raised inside the block."""
+        host, port = server_host_port
 
         def _work():
             lock = sc.DistributedLock(
-                key="k1", acquire_timeout_s=5, servers=[("127.0.0.1", server_port)]
+                key="k1", acquire_timeout_s=5, servers=[(host, port)]
             )
             with pytest.raises(ValueError, match="boom"):
                 with lock:
@@ -278,12 +301,13 @@ class TestDistributedLockContextManager:
 
         await asyncio.to_thread(_work)
 
-    async def test_reuse_after_exit(self, server_port):
+    async def test_reuse_after_exit(self, server_host_port):
         """A lock object can be used again after exiting its context."""
+        host, port = server_host_port
 
         def _work():
             lock = sc.DistributedLock(
-                key="k1", acquire_timeout_s=5, servers=[("127.0.0.1", server_port)]
+                key="k1", acquire_timeout_s=5, servers=[(host, port)]
             )
             with lock:
                 token1 = lock.token
@@ -300,10 +324,12 @@ class TestDistributedLockContextManager:
 
 
 class TestDistributedLockMethods:
-    async def test_acquire_release(self, server_port):
+    async def test_acquire_release(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
             lock = sc.DistributedLock(
-                key="k1", acquire_timeout_s=5, servers=[("127.0.0.1", server_port)]
+                key="k1", acquire_timeout_s=5, servers=[(host, port)]
             )
             ok = lock.acquire()
             assert ok is True
@@ -314,19 +340,21 @@ class TestDistributedLockMethods:
 
         await asyncio.to_thread(_work)
 
-    async def test_acquire_timeout_returns_false(self, server_port):
+    async def test_acquire_timeout_returns_false(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
             lock1 = sc.DistributedLock(
                 key="k1",
                 acquire_timeout_s=5,
                 lease_ttl_s=30,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             lock2 = sc.DistributedLock(
                 key="k1",
                 acquire_timeout_s=0,
                 lease_ttl_s=30,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             lock1.acquire()
             try:
@@ -338,12 +366,13 @@ class TestDistributedLockMethods:
 
         await asyncio.to_thread(_work)
 
-    async def test_close_after_acquire(self, server_port):
+    async def test_close_after_acquire(self, server_host_port):
         """Calling close() directly (without release) still cleans up."""
+        host, port = server_host_port
 
         def _work():
             lock = sc.DistributedLock(
-                key="k1", acquire_timeout_s=5, servers=[("127.0.0.1", server_port)]
+                key="k1", acquire_timeout_s=5, servers=[(host, port)]
             )
             lock.acquire()
             assert lock.token is not None
@@ -361,15 +390,16 @@ class TestDistributedLockMethods:
 
 
 class TestRenewLoop:
-    async def test_renew_keeps_lock_alive(self, server_port):
+    async def test_renew_keeps_lock_alive(self, server_host_port):
         """With a short lease and renew, the lock should stay held past its initial TTL."""
+        host, port = server_host_port
 
         def _work():
             lock = sc.DistributedLock(
                 key="k1",
                 acquire_timeout_s=5,
                 lease_ttl_s=2,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
                 renew_ratio=0.3,  # renew every ~0.6s
             )
             with lock:
@@ -380,15 +410,16 @@ class TestRenewLoop:
 
         await asyncio.to_thread(_work)
 
-    async def test_renew_stops_on_release(self, server_port):
+    async def test_renew_stops_on_release(self, server_host_port):
         """After release(), the renew thread should be stopped."""
+        host, port = server_host_port
 
         def _work():
             lock = sc.DistributedLock(
                 key="k1",
                 acquire_timeout_s=5,
                 lease_ttl_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
                 renew_ratio=0.3,
             )
             lock.acquire()
@@ -406,9 +437,10 @@ class TestRenewLoop:
 
 
 class TestMutualExclusion:
-    async def test_two_threads_serial(self, server_port):
+    async def test_two_threads_serial(self, server_host_port):
         """Two threads competing for the same key execute their critical
         sections sequentially (no overlap)."""
+        host, port = server_host_port
         results: list[tuple[int, str]] = []
         results_lock = threading.Lock()
 
@@ -417,7 +449,7 @@ class TestMutualExclusion:
                 key="mutex",
                 acquire_timeout_s=10,
                 lease_ttl_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             with lock:
                 with results_lock:
@@ -444,8 +476,9 @@ class TestMutualExclusion:
         assert results[2] == (2, "enter")
         assert results[3] == (2, "exit")
 
-    async def test_different_keys_concurrent(self, server_port):
+    async def test_different_keys_concurrent(self, server_host_port):
         """Different keys can be held simultaneously."""
+        host, port = server_host_port
         barrier = threading.Barrier(2, timeout=10)
         held = [False, False]
 
@@ -454,7 +487,7 @@ class TestMutualExclusion:
                 key=key,
                 acquire_timeout_s=5,
                 lease_ttl_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             with lock:
                 held[n] = True
@@ -478,11 +511,12 @@ class TestMutualExclusion:
 
 
 class TestDisconnect:
-    async def test_abrupt_close_frees_lock(self, server_port):
+    async def test_abrupt_close_frees_lock(self, server_host_port):
         """Closing the socket without releasing lets the server clean up."""
+        host, port = server_host_port
 
         def _work():
-            s1, r1 = _connect(server_port)
+            s1, r1 = _connect(host, port)
             sc.acquire(s1, r1, "k1", 5)
             # Close abruptly without release
             r1.close()
@@ -491,7 +525,7 @@ class TestDisconnect:
             time.sleep(0.3)
 
             # A new client should be able to acquire
-            s2, r2 = _connect(server_port)
+            s2, r2 = _connect(host, port)
             try:
                 token, _ = sc.acquire(s2, r2, "k1", 2)
                 assert token is not None
@@ -513,11 +547,12 @@ class TestDisconnect:
 
 
 class TestSyncTwoPhase:
-    async def test_low_level_enqueue_wait_release(self, server_port):
+    async def test_low_level_enqueue_wait_release(self, server_host_port):
         """Low-level: enqueue + wait + release on a free lock."""
+        host, port = server_host_port
 
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 status, token, lease = sc.enqueue(sock, rfile, "k1")
                 assert status == "acquired"
@@ -533,12 +568,13 @@ class TestSyncTwoPhase:
 
         await asyncio.to_thread(_work)
 
-    async def test_queued_then_wait(self, server_port):
+    async def test_queued_then_wait(self, server_host_port):
         """conn1 holds lock, conn2 enqueues (queued), conn1 releases, conn2 waits."""
+        host, port = server_host_port
 
         def _work():
-            s1, r1 = _connect(server_port)
-            s2, r2 = _connect(server_port)
+            s1, r1 = _connect(host, port)
+            s2, r2 = _connect(host, port)
             try:
                 tok1, _ = sc.acquire(s1, r1, "k1", 5)
 
@@ -564,15 +600,16 @@ class TestSyncTwoPhase:
 
         await asyncio.to_thread(_work)
 
-    async def test_distributed_lock_two_phase(self, server_port):
+    async def test_distributed_lock_two_phase(self, server_host_port):
         """DistributedLock.enqueue() + wait() + release() flow."""
+        host, port = server_host_port
 
         def _work():
             lock = sc.DistributedLock(
                 key="k1",
                 acquire_timeout_s=5,
                 lease_ttl_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             status = lock.enqueue()
             assert status == "acquired"
@@ -586,21 +623,22 @@ class TestSyncTwoPhase:
 
         await asyncio.to_thread(_work)
 
-    async def test_distributed_lock_two_phase_contention(self, server_port):
+    async def test_distributed_lock_two_phase_contention(self, server_host_port):
         """lock1 holds, lock2 does enqueue+wait, lock1 releases -> lock2 gets it."""
+        host, port = server_host_port
 
         def _work():
             lock1 = sc.DistributedLock(
                 key="k1",
                 acquire_timeout_s=5,
                 lease_ttl_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             lock2 = sc.DistributedLock(
                 key="k1",
                 acquire_timeout_s=5,
                 lease_ttl_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
 
             lock1.acquire()
@@ -660,9 +698,11 @@ class TestDistributedSemaphoreDefaults:
 
 
 class TestSemAcquireRelease:
-    async def test_basic_cycle(self, server_port):
+    async def test_basic_cycle(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 token, lease = sc.sem_acquire(sock, rfile, "s1", 5, 2)
                 assert isinstance(token, str) and len(token) > 0
@@ -673,12 +713,13 @@ class TestSemAcquireRelease:
 
         await asyncio.to_thread(_work)
 
-    async def test_acquire_timeout(self, server_port):
+    async def test_acquire_timeout(self, server_host_port):
         """Semaphore with limit=1 should timeout on second acquire."""
+        host, port = server_host_port
 
         def _work():
-            s1, r1 = _connect(server_port)
-            s2, r2 = _connect(server_port)
+            s1, r1 = _connect(host, port)
+            s2, r2 = _connect(host, port)
             try:
                 sc.sem_acquire(s1, r1, "s1_lim1", 5, 1)
                 with pytest.raises(TimeoutError):
@@ -689,9 +730,11 @@ class TestSemAcquireRelease:
 
         await asyncio.to_thread(_work)
 
-    async def test_release_bad_token(self, server_port):
+    async def test_release_bad_token(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 sc.sem_acquire(sock, rfile, "s1", 5, 2)
                 with pytest.raises(RuntimeError, match="sem_release failed"):
@@ -703,9 +746,11 @@ class TestSemAcquireRelease:
 
 
 class TestSemRenew:
-    async def test_renew_returns_remaining(self, server_port):
+    async def test_renew_returns_remaining(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 token, _ = sc.sem_acquire(sock, rfile, "s1", 5, 2, lease_ttl_s=10)
                 remaining = sc.sem_renew(sock, rfile, "s1", token, lease_ttl_s=20)
@@ -715,9 +760,11 @@ class TestSemRenew:
 
         await asyncio.to_thread(_work)
 
-    async def test_renew_bad_token(self, server_port):
+    async def test_renew_bad_token(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 sc.sem_acquire(sock, rfile, "s1", 5, 2)
                 with pytest.raises(RuntimeError, match="sem_renew failed"):
@@ -734,13 +781,15 @@ class TestSemRenew:
 
 
 class TestDistributedSemaphoreContextManager:
-    async def test_basic_lifecycle(self, server_port):
+    async def test_basic_lifecycle(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
             sem = sc.DistributedSemaphore(
                 key="s1",
                 limit=2,
                 acquire_timeout_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             with sem as s:
                 assert s is sem
@@ -750,13 +799,15 @@ class TestDistributedSemaphoreContextManager:
 
         await asyncio.to_thread(_work)
 
-    async def test_exception_inside_context(self, server_port):
+    async def test_exception_inside_context(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
             sem = sc.DistributedSemaphore(
                 key="s1",
                 limit=2,
                 acquire_timeout_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             with pytest.raises(ValueError, match="boom"):
                 with sem:
@@ -767,13 +818,15 @@ class TestDistributedSemaphoreContextManager:
 
         await asyncio.to_thread(_work)
 
-    async def test_reuse_after_exit(self, server_port):
+    async def test_reuse_after_exit(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
             sem = sc.DistributedSemaphore(
                 key="s1",
                 limit=2,
                 acquire_timeout_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             with sem:
                 token1 = sem.token
@@ -790,13 +843,15 @@ class TestDistributedSemaphoreContextManager:
 
 
 class TestDistributedSemaphoreMethods:
-    async def test_acquire_release(self, server_port):
+    async def test_acquire_release(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
             sem = sc.DistributedSemaphore(
                 key="s1",
                 limit=2,
                 acquire_timeout_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             ok = sem.acquire()
             assert ok is True
@@ -807,21 +862,23 @@ class TestDistributedSemaphoreMethods:
 
         await asyncio.to_thread(_work)
 
-    async def test_acquire_timeout_returns_false(self, server_port):
+    async def test_acquire_timeout_returns_false(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
             sem1 = sc.DistributedSemaphore(
                 key="s1_lim1",
                 limit=1,
                 acquire_timeout_s=5,
                 lease_ttl_s=30,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             sem2 = sc.DistributedSemaphore(
                 key="s1_lim1",
                 limit=1,
                 acquire_timeout_s=0,
                 lease_ttl_s=30,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             sem1.acquire()
             try:
@@ -840,8 +897,9 @@ class TestDistributedSemaphoreMethods:
 
 
 class TestSemMutualExclusion:
-    async def test_limit_allows_n_blocks_n_plus_1(self, server_port):
+    async def test_limit_allows_n_blocks_n_plus_1(self, server_host_port):
         """Semaphore with limit=2 allows 2 concurrent holders but blocks a 3rd."""
+        host, port = server_host_port
         results: list[tuple[int, str]] = []
         results_lock = threading.Lock()
 
@@ -851,7 +909,7 @@ class TestSemMutualExclusion:
                 limit=2,
                 acquire_timeout_s=timeout,
                 lease_ttl_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             with sem:
                 with results_lock:
@@ -892,9 +950,11 @@ class TestSemMutualExclusion:
 
 
 class TestSyncSemTwoPhase:
-    async def test_low_level_enqueue_wait_release(self, server_port):
+    async def test_low_level_enqueue_wait_release(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 status, token, lease = sc.sem_enqueue(sock, rfile, "s1", 2)
                 assert status == "acquired"
@@ -910,12 +970,13 @@ class TestSyncSemTwoPhase:
 
         await asyncio.to_thread(_work)
 
-    async def test_queued_then_wait(self, server_port):
+    async def test_queued_then_wait(self, server_host_port):
         """conn1 holds (limit=1), conn2 enqueues (queued), conn1 releases, conn2 waits."""
+        host, port = server_host_port
 
         def _work():
-            s1, r1 = _connect(server_port)
-            s2, r2 = _connect(server_port)
+            s1, r1 = _connect(host, port)
+            s2, r2 = _connect(host, port)
             try:
                 tok1, _ = sc.sem_acquire(s1, r1, "s1_queue", 5, 1)
 
@@ -940,14 +1001,16 @@ class TestSyncSemTwoPhase:
 
         await asyncio.to_thread(_work)
 
-    async def test_distributed_semaphore_two_phase(self, server_port):
+    async def test_distributed_semaphore_two_phase(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
             sem = sc.DistributedSemaphore(
                 key="s1",
                 limit=2,
                 acquire_timeout_s=5,
                 lease_ttl_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             status = sem.enqueue()
             assert status == "acquired"
@@ -961,8 +1024,9 @@ class TestSyncSemTwoPhase:
 
         await asyncio.to_thread(_work)
 
-    async def test_distributed_semaphore_two_phase_contention(self, server_port):
+    async def test_distributed_semaphore_two_phase_contention(self, server_host_port):
         """sem1 holds (limit=1), sem2 enqueues+waits, sem1 releases -> sem2 gets it."""
+        host, port = server_host_port
 
         def _work():
             sem1 = sc.DistributedSemaphore(
@@ -970,14 +1034,14 @@ class TestSyncSemTwoPhase:
                 limit=1,
                 acquire_timeout_s=5,
                 lease_ttl_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
             sem2 = sc.DistributedSemaphore(
                 key="s1_2phase",
                 limit=1,
                 acquire_timeout_s=5,
                 lease_ttl_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
             )
 
             sem1.acquire()
@@ -1011,9 +1075,11 @@ class TestSyncSemTwoPhase:
 
 
 class TestStats:
-    async def test_stats_returns_dict(self, server_port):
+    async def test_stats_returns_dict(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            sock, rfile = _connect(server_port)
+            sock, rfile = _connect(host, port)
             try:
                 result = sc.stats(sock, rfile)
                 assert isinstance(result, dict)
@@ -1030,10 +1096,12 @@ class TestStats:
 
         await asyncio.to_thread(_work)
 
-    async def test_stats_shows_held_lock(self, server_port):
+    async def test_stats_shows_held_lock(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            s1, r1 = _connect(server_port)
-            s2, r2 = _connect(server_port)
+            s1, r1 = _connect(host, port)
+            s2, r2 = _connect(host, port)
             try:
                 token, _ = sc.acquire(s1, r1, "stats_lock", 5, lease_ttl_s=30)
                 result = sc.stats(s2, r2)
@@ -1046,10 +1114,12 @@ class TestStats:
 
         await asyncio.to_thread(_work)
 
-    async def test_stats_shows_held_semaphore(self, server_port):
+    async def test_stats_shows_held_semaphore(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
-            s1, r1 = _connect(server_port)
-            s2, r2 = _connect(server_port)
+            s1, r1 = _connect(host, port)
+            s2, r2 = _connect(host, port)
             try:
                 token, _ = sc.sem_acquire(s1, r1, "stats_sem", 5, 2, lease_ttl_s=30)
                 result = sc.stats(s2, r2)
@@ -1072,12 +1142,14 @@ class TestSharding:
         lock = sc.DistributedLock(key="k")
         assert lock.servers == [("127.0.0.1", 6388)]
 
-    async def test_custom_strategy(self, server_port):
+    async def test_custom_strategy(self, server_host_port):
+        host, port = server_host_port
+
         def _work():
             lock = sc.DistributedLock(
                 key="k1",
                 acquire_timeout_s=5,
-                servers=[("127.0.0.1", server_port)],
+                servers=[(host, port)],
                 sharding_strategy=lambda key, n: 0,
             )
             with lock as lk:

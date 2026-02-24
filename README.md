@@ -118,6 +118,7 @@ if await lock.wait(timeout_s=10):
 | `renew_ratio`       | `0.5`                   | Renew at `lease * ratio` seconds                                        |
 | `ssl_context`       | `None`                  | `ssl.SSLContext` for TLS connections. `None` uses plain TCP              |
 | `auth_token`        | `None`                  | Auth token for servers started with `--auth-token`. `None` skips auth    |
+| `connect_timeout_s` | `10`                    | Seconds to wait for the TCP connection to the server                     |
 
 ## Authentication
 
@@ -207,6 +208,7 @@ Manual acquire/release and two-phase (`enqueue()` / `wait()`) work the same as l
 | `renew_ratio`       | `0.5`                   | Renew at `lease * ratio` seconds                                        |
 | `ssl_context`       | `None`                  | `ssl.SSLContext` for TLS connections. `None` uses plain TCP              |
 | `auth_token`        | `None`                  | Auth token for servers started with `--auth-token`. `None` skips auth    |
+| `connect_timeout_s` | `10`                    | Seconds to wait for the TCP connection to the server                     |
 
 ## Stats
 

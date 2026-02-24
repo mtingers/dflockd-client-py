@@ -53,6 +53,7 @@ if acquired:
 | `renew_ratio` | `float` | `0.5` | Renew at `lease * ratio` seconds |
 | `ssl_context` | `ssl.SSLContext \| None` | `None` | TLS context. `None` uses plain TCP |
 | `auth_token` | `str \| None` | `None` | Auth token for servers started with `--auth-token`. `None` skips auth |
+| `connect_timeout_s` | `float` | `10` | Seconds to wait for the TCP connection |
 
 ## Authentication
 
@@ -226,6 +227,7 @@ if await sem.wait(timeout_s=10):
 | `renew_ratio` | `float` | `0.5` | Renew at `lease * ratio` seconds |
 | `ssl_context` | `ssl.SSLContext \| None` | `None` | TLS context. `None` uses plain TCP |
 | `auth_token` | `str \| None` | `None` | Auth token for servers started with `--auth-token`. `None` skips auth |
+| `connect_timeout_s` | `float` | `10` | Seconds to wait for the TCP connection |
 
 ### Semaphore low-level functions
 
@@ -257,7 +259,7 @@ writer.close()
 await writer.wait_closed()
 ```
 
-Returns a dict with:
+Returns a `StatsResult` TypedDict with:
 
 | Field | Type | Description |
 |---|---|---|

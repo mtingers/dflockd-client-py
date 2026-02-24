@@ -15,8 +15,8 @@ def _server_available(host: str, port: int) -> bool:
 
 
 @pytest.fixture()
-def server_port():
-    """Return the port of a running dflockd server.
+def server_host_port():
+    """Return (host, port) of a running dflockd server.
 
     Configure with DFLOCKD_TEST_HOST and DFLOCKD_TEST_PORT environment
     variables. Defaults to 127.0.0.1:6388. Tests requiring this fixture
@@ -26,4 +26,10 @@ def server_port():
     port = int(os.environ.get("DFLOCKD_TEST_PORT", "6388"))
     if not _server_available(host, port):
         pytest.skip(f"dflockd server not available at {host}:{port}")
-    return port
+    return host, port
+
+
+@pytest.fixture()
+def server_port(server_host_port):
+    """Return just the port (backward-compatible convenience fixture)."""
+    return server_host_port[1]
