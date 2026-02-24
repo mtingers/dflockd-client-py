@@ -100,6 +100,8 @@ def enqueue(
     resp = _readline(rfile)
     if resp.startswith("acquired "):
         parts = resp.split()
+        if len(parts) < 2:
+            raise RuntimeError(f"bad acquired response: {resp!r}")
         token = parts[1]
         lease = parse_lease(parts)
         return ("acquired", token, lease)
@@ -362,6 +364,8 @@ class _SyncBase:
             return
         interval = max(1.0, self.lease * self.renew_ratio)
         while not self._stop_event.wait(interval):
+            renew_failed = False
+            remaining = -1
             with self._io_lock:
                 if self._stop_event.is_set():
                     return
@@ -374,7 +378,7 @@ class _SyncBase:
                         try:
                             sock.settimeout(old_timeout)
                         except OSError:
-                            return
+                            raise
                 except Exception:
                     if self._stop_event.is_set():
                         return
@@ -384,8 +388,10 @@ class _SyncBase:
                         self.key,
                         token,
                     )
-                    self.close()
-                    return
+                    renew_failed = True
+            if renew_failed:
+                self.close()
+                return
             if remaining > 0:
                 interval = max(1.0, remaining * self.renew_ratio)
 
@@ -400,19 +406,20 @@ class _SyncBase:
             return
         self._closed = True
         self._stop_event.set()
-        if self._rfile:
-            try:
-                self._rfile.close()
-            except Exception:
-                pass
-        if self._sock:
-            try:
-                self._sock.close()
-            except Exception:
-                pass
-        self._rfile = None
-        self._sock = None
-        self.token = None
+        with self._io_lock:
+            if self._rfile:
+                try:
+                    self._rfile.close()
+                except Exception:
+                    pass
+            if self._sock:
+                try:
+                    self._sock.close()
+                except Exception:
+                    pass
+            self._rfile = None
+            self._sock = None
+            self.token = None
         t = self._renew_thread
         if t is not None and t is not threading.current_thread():
             t.join(timeout=5)
@@ -517,6 +524,8 @@ def sem_enqueue(
     resp = _readline(rfile)
     if resp.startswith("acquired "):
         parts = resp.split()
+        if len(parts) < 2:
+            raise RuntimeError(f"bad acquired response: {resp!r}")
         token = parts[1]
         lease = parse_lease(parts)
         return ("acquired", token, lease)

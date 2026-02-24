@@ -106,6 +106,8 @@ async def enqueue(
     resp = await _readline(reader)
     if resp.startswith("acquired "):
         parts = resp.split()
+        if len(parts) < 2:
+            raise RuntimeError(f"bad acquired response: {resp!r}")
         token = parts[1]
         lease = parse_lease(parts)
         return ("acquired", token, lease)
@@ -366,6 +368,8 @@ class _AsyncBase:
         try:
             while True:
                 await asyncio.sleep(interval)
+                if self._closed:
+                    return
                 try:
                     remaining = await self._proto_renew(
                         reader, writer, token
@@ -512,6 +516,8 @@ async def sem_enqueue(
     resp = await _readline(reader)
     if resp.startswith("acquired "):
         parts = resp.split()
+        if len(parts) < 2:
+            raise RuntimeError(f"bad acquired response: {resp!r}")
         token = parts[1]
         lease = parse_lease(parts)
         return ("acquired", token, lease)
