@@ -23,8 +23,6 @@ async def _readline(reader: asyncio.StreamReader) -> str:
         raise RuntimeError("server response exceeded line length limit") from e
     if raw == b"":
         raise ConnectionError("server closed connection")
-    if len(raw) > _MAX_LINE_LEN:
-        raise RuntimeError(f"server response too large ({len(raw)} bytes)")
     return raw.decode("utf-8").rstrip("\r\n")
 
 
@@ -108,8 +106,6 @@ async def enqueue(
     resp = await _readline(reader)
     if resp.startswith("acquired "):
         parts = resp.split()
-        if len(parts) < 2:
-            raise RuntimeError(f"bad acquired response: {resp!r}")
         token = parts[1]
         lease = parse_lease(parts)
         return ("acquired", token, lease)
@@ -257,10 +253,12 @@ class _AsyncBase:
         return self.servers[idx]
 
     async def _cancel_renew(self):
-        if self._renew_task is not None:
-            self._renew_task.cancel()
-            with contextlib.suppress(BaseException):
-                await self._renew_task
+        task = self._renew_task
+        if task is not None:
+            if task is not asyncio.current_task():
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
             self._renew_task = None
 
     async def _connect(
@@ -514,8 +512,6 @@ async def sem_enqueue(
     resp = await _readline(reader)
     if resp.startswith("acquired "):
         parts = resp.split()
-        if len(parts) < 2:
-            raise RuntimeError(f"bad acquired response: {resp!r}")
         token = parts[1]
         lease = parse_lease(parts)
         return ("acquired", token, lease)

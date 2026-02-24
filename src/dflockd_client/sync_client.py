@@ -100,8 +100,6 @@ def enqueue(
     resp = _readline(rfile)
     if resp.startswith("acquired "):
         parts = resp.split()
-        if len(parts) < 2:
-            raise RuntimeError(f"bad acquired response: {resp!r}")
         token = parts[1]
         lease = parse_lease(parts)
         return ("acquired", token, lease)
@@ -186,6 +184,9 @@ class _SyncBase:
     _renew_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _stop_event: threading.Event = field(
         default_factory=threading.Event, init=False, repr=False
+    )
+    _io_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
     )
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -341,10 +342,11 @@ class _SyncBase:
         released = False
         try:
             self._stop_renew()
-            sock, rfile = self._sock, self._rfile
-            if sock is not None and rfile is not None and self.token:
-                self._proto_release(sock, rfile, self.token)
-                released = True
+            with self._io_lock:
+                sock, rfile = self._sock, self._rfile
+                if sock is not None and rfile is not None and self.token:
+                    self._proto_release(sock, rfile, self.token)
+                    released = True
         finally:
             self.close()
         return released
@@ -360,24 +362,30 @@ class _SyncBase:
             return
         interval = max(1.0, self.lease * self.renew_ratio)
         while not self._stop_event.wait(interval):
-            try:
-                old_timeout = sock.gettimeout()
-                sock.settimeout(30)
-                try:
-                    remaining = self._proto_renew(sock, rfile, token)
-                finally:
-                    sock.settimeout(old_timeout)
-            except Exception:
+            with self._io_lock:
                 if self._stop_event.is_set():
                     return
-                log.error(
-                    "%s lost (renew failed): key=%s token=%s",
-                    type(self).__name__,
-                    self.key,
-                    token,
-                )
-                self.close()
-                return
+                try:
+                    old_timeout = sock.gettimeout()
+                    sock.settimeout(30)
+                    try:
+                        remaining = self._proto_renew(sock, rfile, token)
+                    finally:
+                        try:
+                            sock.settimeout(old_timeout)
+                        except OSError:
+                            return
+                except Exception:
+                    if self._stop_event.is_set():
+                        return
+                    log.error(
+                        "%s lost (renew failed): key=%s token=%s",
+                        type(self).__name__,
+                        self.key,
+                        token,
+                    )
+                    self.close()
+                    return
             if remaining > 0:
                 interval = max(1.0, remaining * self.renew_ratio)
 
@@ -405,6 +413,10 @@ class _SyncBase:
         self._rfile = None
         self._sock = None
         self.token = None
+        t = self._renew_thread
+        if t is not None and t is not threading.current_thread():
+            t.join(timeout=5)
+        self._renew_thread = None
 
 
 # ===========================================================================
@@ -505,8 +517,6 @@ def sem_enqueue(
     resp = _readline(rfile)
     if resp.startswith("acquired "):
         parts = resp.split()
-        if len(parts) < 2:
-            raise RuntimeError(f"bad acquired response: {resp!r}")
         token = parts[1]
         lease = parse_lease(parts)
         return ("acquired", token, lease)
