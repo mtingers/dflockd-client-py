@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.7.0] - 2026-02-24
+
+### Fixed
+
+- Sync renew loop race: replace `_stop_event.clear()` with fresh `Event` to prevent lingering threads from ignoring stop signals
+- Renew loop sends aggressive 1-second intervals when server returns lease=0 (now falls back to 30s)
+- `__del__()` now closes leaked sockets/transports with `ResourceWarning` instead of silently leaking FDs
+- Async `aclose()` bounds `wait_closed()` to 5s to prevent indefinite hangs
+- Renew loop holds local references to stale connections after reconnect (now cleared in `finally`)
+- Async readline missing 1 MiB length guard (now raises `RuntimeError` for oversized responses)
+- Auth handshake missing timeout (now uses `connect_timeout_s`)
+- Renew loop continues operating on stale connections after reconnect (added identity checks)
+- `_stop_renew()` thread orphan when `_renew_thread` reference is stale
+- Spurious "lock lost" log messages on normal shutdown
+- Sync socket timeouts not set during renew (now scoped to 5s for renew operations)
+- Sync `close()` stalls waiting for `_io_lock` held by renew loop (now interrupts via `sock.shutdown()`)
+- Enqueue bounds checks missing for malformed server responses
+- Release errors in `__exit__`/`__aexit__` could mask the original exception (now suppressed)
+- Protocol arguments containing newlines could corrupt the wire format (now rejected by `encode_lines()`)
+- `renew_ratio` outside (0, 1) not validated (now raises `ValueError`)
+
+### Added
+
+- Top-level package exports: `AsyncDistributedLock`, `AsyncDistributedSemaphore`, `SyncDistributedLock`, `SyncDistributedSemaphore`, `StatsResult`, `DEFAULT_SERVERS`, `ShardingStrategy`, `stable_hash_shard`, `__version__`
+- Shared `_common` module with `encode_lines()`, `parse_lease()`, response size limits, and connect timeout constant
+- Comprehensive resource cleanup tests (`test_resource_cleanup.py`)
+- `DEFAULT_SERVERS` is now an immutable tuple
+
+### Changed
+
+- Refactored async and sync clients to share base classes (`_AsyncBase`, `_SyncBase`), eliminating code duplication
+
+[v1.7.0]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.7.0
+
 ## [v1.6.2] - 2026-02-24
 
 ### Fixed

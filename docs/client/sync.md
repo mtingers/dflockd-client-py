@@ -6,6 +6,12 @@ The sync client uses standard `socket` and `threading` for blocking lock and sem
 from dflockd_client.sync_client import DistributedLock, DistributedSemaphore
 ```
 
+**Alternative top-level imports** (equivalent):
+
+```python
+from dflockd_client import SyncDistributedLock, SyncDistributedSemaphore
+```
+
 ## Context manager
 
 The recommended way to use the client:
@@ -89,6 +95,8 @@ The same `ssl_context` parameter is available on `DistributedSemaphore`.
 
 Once acquired, a daemon thread sends renew requests at `lease * renew_ratio` intervals. If renewal fails, the client logs an error and sets `token = None`.
 
+The renewal thread includes staleness checks — if the connection is replaced (e.g. after a reconnect), the old renewal thread detects the identity mismatch and exits cleanly. If the server returns a zero-length lease, the renewal loop falls back to a 30-second interval instead of spinning aggressively.
+
 The renewal thread is stopped automatically on `release()`, context manager exit, or `close()`.
 
 ## Cleanup
@@ -104,6 +112,8 @@ try:
 finally:
     lock.close()
 ```
+
+If a client is garbage collected without being properly closed, `__del__` will close the underlying socket and emit a `ResourceWarning` to help catch leaked connections during development.
 
 ## Two-phase lock acquisition
 
@@ -274,6 +284,7 @@ Returns a `StatsResult` TypedDict with:
 | | Async | Sync |
 |---|---|---|
 | Import | `dflockd_client.client` | `dflockd_client.sync_client` |
+| Top-level alias | `from dflockd_client import AsyncDistributedLock` | `from dflockd_client import SyncDistributedLock` |
 | Context manager | `async with` | `with` |
 | Renewal | `asyncio.Task` | `threading.Thread` (daemon) |
 | Cleanup | `await lock.aclose()` | `lock.close()` |

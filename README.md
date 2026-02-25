@@ -61,6 +61,9 @@ with DistributedLock("my-key", acquire_timeout_s=10) as lock:
     # critical section — lease auto-renews in background thread
 ```
 
+> **Tip:** You can also use the top-level import alias:
+> `from dflockd_client import SyncDistributedLock` (or `AsyncDistributedLock` for async).
+
 ### Manual acquire/release
 
 Both clients support explicit `acquire()` / `release()` outside of a context manager:

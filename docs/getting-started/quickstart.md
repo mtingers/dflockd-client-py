@@ -11,6 +11,7 @@ You need a running [dflockd](https://github.com/mtingers/dflockd) server. By def
 ```python
 import asyncio
 from dflockd_client.client import DistributedLock
+# or: from dflockd_client import AsyncDistributedLock as DistributedLock
 
 async def main():
     async with DistributedLock("my-key", acquire_timeout_s=10) as lock:
@@ -24,6 +25,7 @@ asyncio.run(main())
 
 ```python
 from dflockd_client.sync_client import DistributedLock
+# or: from dflockd_client import SyncDistributedLock as DistributedLock
 
 with DistributedLock("my-key", acquire_timeout_s=10) as lock:
     print(f"token={lock.token} lease={lock.lease}")

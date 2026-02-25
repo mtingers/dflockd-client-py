@@ -6,6 +6,12 @@ The async client uses `asyncio` for non-blocking lock and semaphore operations w
 from dflockd_client.client import DistributedLock, DistributedSemaphore
 ```
 
+**Alternative top-level imports** (equivalent):
+
+```python
+from dflockd_client import AsyncDistributedLock, AsyncDistributedSemaphore
+```
+
 ## Context manager
 
 The recommended way to use the client. The lock is acquired on entry and released on exit:
@@ -98,6 +104,8 @@ After acquiring a lock, these attributes are available:
 
 Once a lock is acquired, the client starts an `asyncio.Task` that sends renew requests at `lease * renew_ratio` intervals. If renewal fails (server unreachable, lease already expired), the client logs an error and sets `token = None`.
 
+The renewal task includes staleness checks — if the connection is replaced (e.g. after a reconnect), the old renewal task detects the identity mismatch and exits cleanly. If the server returns a zero-length lease, the renewal loop falls back to a 30-second interval instead of spinning aggressively.
+
 The renewal task is cancelled automatically on `release()`, context manager exit, or `aclose()`.
 
 ## Cleanup
@@ -113,6 +121,8 @@ try:
 finally:
     await lock.aclose()
 ```
+
+If a client is garbage collected without being properly closed, `__del__` will close the underlying transport and emit a `ResourceWarning` to help catch leaked connections during development.
 
 ## Two-phase lock acquisition
 

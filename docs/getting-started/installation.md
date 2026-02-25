@@ -31,6 +31,6 @@ uv sync
 ## Verify installation
 
 ```python
-from dflockd_client.client import DistributedLock
-print("dflockd-client installed successfully")
+from dflockd_client import __version__
+print(__version__)
 ```

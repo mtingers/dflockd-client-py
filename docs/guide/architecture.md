@@ -28,6 +28,8 @@ The dflockd-client library provides async and sync Python clients for [dflockd](
 
 ### Connection
 
+Both `DistributedLock` and `DistributedSemaphore` extend shared base classes (`_AsyncBase` / `_SyncBase`) that handle connection management, renewal, and cleanup.
+
 When `acquire()` or `enqueue()` is called, the client:
 
 1. Selects a server using the sharding strategy (based on the key).
@@ -66,6 +68,8 @@ On `release()` or context manager exit:
 
 If the client disconnects without releasing (crash, network failure), the server automatically releases the lock when the lease expires or on disconnect (if auto-release is enabled on the server).
 
+**Safety nets:** All server responses are subject to a 1 MiB size guard to prevent unbounded memory usage from malformed responses. If a client is garbage collected without being properly closed, `__del__` closes the underlying socket/transport and emits a `ResourceWarning`.
+
 ## Sharding
 
 When multiple servers are configured, the client uses a sharding strategy to deterministically map each lock key to a server. The default strategy uses `zlib.crc32` for stable hashing. See [Sharding](sharding.md) for details.
@@ -74,6 +78,8 @@ When multiple servers are configured, the client uses a sharding strategy to det
 
 | Module | Description |
 |---|---|
-| `dflockd_client.client` | Async client (`asyncio`-based) |
-| `dflockd_client.sync_client` | Sync client (`socket` + `threading`-based) |
+| `dflockd_client` | Top-level package with convenience re-exports (`AsyncDistributedLock`, `SyncDistributedLock`, etc.) |
+| `dflockd_client._common` | Shared protocol helpers: `encode_lines()`, `parse_lease()`, `StatsResult`, response size limits |
+| `dflockd_client.client` | Async client (`asyncio`-based), extends `_AsyncBase` |
+| `dflockd_client.sync_client` | Sync client (`socket` + `threading`-based), extends `_SyncBase` |
 | `dflockd_client.sharding` | Sharding strategy and defaults |

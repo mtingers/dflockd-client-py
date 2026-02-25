@@ -1,5 +1,37 @@
 # Python API
 
+## dflockd_client (top-level exports)
+
+The package provides convenience imports at the top level so you don't need to reach into submodules:
+
+```python
+from dflockd_client import (
+    AsyncDistributedLock,
+    AsyncDistributedSemaphore,
+    SyncDistributedLock,
+    SyncDistributedSemaphore,
+    StatsResult,
+    __version__,
+    DEFAULT_SERVERS,
+    ShardingStrategy,
+    stable_hash_shard,
+)
+```
+
+| Name | Type | Description |
+|---|---|---|
+| `AsyncDistributedLock` | `class` | Alias for `dflockd_client.client.DistributedLock` |
+| `AsyncDistributedSemaphore` | `class` | Alias for `dflockd_client.client.DistributedSemaphore` |
+| `SyncDistributedLock` | `class` | Alias for `dflockd_client.sync_client.DistributedLock` |
+| `SyncDistributedSemaphore` | `class` | Alias for `dflockd_client.sync_client.DistributedSemaphore` |
+| `StatsResult` | `TypedDict` | Return type of `stats()` with `connections`, `locks`, `semaphores`, `idle_locks`, `idle_semaphores` |
+| `__version__` | `str` | Installed package version (e.g. `"1.7.0"`) |
+| `DEFAULT_SERVERS` | `tuple[tuple[str, int], ...]` | Default server list: `(("127.0.0.1", 6388),)` |
+| `ShardingStrategy` | `Callable[[str, int], int]` | Type alias for sharding callables |
+| `stable_hash_shard` | `function` | Default CRC-32 sharding strategy |
+
+---
+
 ## dflockd_client.client (async)
 
 ### DistributedLock
@@ -453,5 +485,5 @@ Default sharding strategy using `zlib.crc32`. Deterministic across processes reg
 ### DEFAULT_SERVERS
 
 ```python
-DEFAULT_SERVERS: list[tuple[str, int]] = [("127.0.0.1", 6388)]
+DEFAULT_SERVERS: tuple[tuple[str, int], ...] = (("127.0.0.1", 6388),)
 ```
