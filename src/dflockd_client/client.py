@@ -498,8 +498,13 @@ async def sem_acquire(
     if limit <= 0:
         raise ValueError("limit must be > 0")
     return await acquire(
-        reader, writer, key, acquire_timeout_s, lease_ttl_s,
-        cmd_prefix="s", limit=limit,
+        reader,
+        writer,
+        key,
+        acquire_timeout_s,
+        lease_ttl_s,
+        cmd_prefix="s",
+        limit=limit,
     )
 
 
@@ -523,7 +528,12 @@ async def sem_enqueue(
     if limit <= 0:
         raise ValueError("limit must be > 0")
     return await enqueue(
-        reader, writer, key, lease_ttl_s, cmd_prefix="s", limit=limit,
+        reader,
+        writer,
+        key,
+        lease_ttl_s,
+        cmd_prefix="s",
+        limit=limit,
     )
 
 
@@ -558,13 +568,23 @@ class DistributedSemaphore(_AsyncBase):
 
     async def _proto_acquire(self, reader, writer):
         return await acquire(
-            reader, writer, self.key, self.acquire_timeout_s, self.lease_ttl_s,
-            cmd_prefix="s", limit=self.limit,
+            reader,
+            writer,
+            self.key,
+            self.acquire_timeout_s,
+            self.lease_ttl_s,
+            cmd_prefix="s",
+            limit=self.limit,
         )
 
     async def _proto_renew(self, reader, writer, token):
         return await renew(
-            reader, writer, self.key, token, self.lease_ttl_s, cmd_prefix="s",
+            reader,
+            writer,
+            self.key,
+            token,
+            self.lease_ttl_s,
+            cmd_prefix="s",
         )
 
     async def _proto_release(self, reader, writer, token):
@@ -572,8 +592,12 @@ class DistributedSemaphore(_AsyncBase):
 
     async def _proto_enqueue(self, reader, writer):
         return await enqueue(
-            reader, writer, self.key, self.lease_ttl_s,
-            cmd_prefix="s", limit=self.limit,
+            reader,
+            writer,
+            self.key,
+            self.lease_ttl_s,
+            cmd_prefix="s",
+            limit=self.limit,
         )
 
     async def _proto_wait(self, reader, writer, timeout):

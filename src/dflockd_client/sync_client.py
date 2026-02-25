@@ -531,8 +531,13 @@ def sem_acquire(
     if limit <= 0:
         raise ValueError("limit must be > 0")
     return acquire(
-        sock, rfile, key, acquire_timeout_s, lease_ttl_s,
-        cmd_prefix="s", limit=limit,
+        sock,
+        rfile,
+        key,
+        acquire_timeout_s,
+        lease_ttl_s,
+        cmd_prefix="s",
+        limit=limit,
     )
 
 
@@ -589,8 +594,13 @@ class DistributedSemaphore(_SyncBase):
 
     def _proto_acquire(self, sock, rfile):
         return acquire(
-            sock, rfile, self.key, self.acquire_timeout_s, self.lease_ttl_s,
-            cmd_prefix="s", limit=self.limit,
+            sock,
+            rfile,
+            self.key,
+            self.acquire_timeout_s,
+            self.lease_ttl_s,
+            cmd_prefix="s",
+            limit=self.limit,
         )
 
     def _proto_renew(self, sock, rfile, token):
@@ -601,8 +611,12 @@ class DistributedSemaphore(_SyncBase):
 
     def _proto_enqueue(self, sock, rfile):
         return enqueue(
-            sock, rfile, self.key, self.lease_ttl_s,
-            cmd_prefix="s", limit=self.limit,
+            sock,
+            rfile,
+            self.key,
+            self.lease_ttl_s,
+            cmd_prefix="s",
+            limit=self.limit,
         )
 
     def _proto_wait(self, sock, rfile, timeout):
