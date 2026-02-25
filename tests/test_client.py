@@ -379,6 +379,48 @@ class TestAsyncTwoPhase:
         await lock.release()
         assert lock.token is None
 
+    async def test_fifo_ordering_among_tasks(self, server_host_port):
+        """5 waiters enqueued sequentially must be granted in FIFO order."""
+        host, port = server_host_port
+        N = 5
+        grant_order: list[int] = []
+
+        # Holder keeps the lock while all waiters enqueue
+        holder = aclient.DistributedLock(
+            key="fifo_lock",
+            acquire_timeout_s=5,
+            lease_ttl_s=10,
+            servers=[(host, port)],
+        )
+        await holder.acquire()
+
+        # Create N locks and enqueue them sequentially
+        waiters: list[aclient.DistributedLock] = []
+        for i in range(N):
+            lk = aclient.DistributedLock(
+                key="fifo_lock",
+                acquire_timeout_s=10,
+                lease_ttl_s=10,
+                servers=[(host, port)],
+            )
+            status = await lk.enqueue()
+            assert status == "queued"
+            waiters.append(lk)
+            await asyncio.sleep(0.05)
+
+        # Release the holder so waiters can be granted
+        await holder.release()
+
+        # All waiters call wait() concurrently; record grant order
+        async def _wait_and_record(idx: int, lk: aclient.DistributedLock):
+            ok = await lk.wait()
+            assert ok is True
+            grant_order.append(idx)
+            await lk.release()
+
+        await asyncio.gather(*[_wait_and_record(i, w) for i, w in enumerate(waiters)])
+        assert grant_order == list(range(N))
+
     async def test_distributed_lock_two_phase_contention(self, server_host_port):
         """Two DistributedLock instances: lock1 holds, lock2 does enqueue+wait."""
         host, port = server_host_port
@@ -621,6 +663,46 @@ class TestAsyncSemTwoPhase:
 
         await sem.release()
         assert sem.token is None
+
+    async def test_fifo_ordering_among_tasks(self, server_host_port):
+        """5 waiters enqueued sequentially must be granted in FIFO order (semaphore, limit=1)."""
+        host, port = server_host_port
+        N = 5
+        grant_order: list[int] = []
+
+        holder = aclient.DistributedSemaphore(
+            key="fifo_sem",
+            limit=1,
+            acquire_timeout_s=5,
+            lease_ttl_s=10,
+            servers=[(host, port)],
+        )
+        await holder.acquire()
+
+        waiters: list[aclient.DistributedSemaphore] = []
+        for i in range(N):
+            sem = aclient.DistributedSemaphore(
+                key="fifo_sem",
+                limit=1,
+                acquire_timeout_s=10,
+                lease_ttl_s=10,
+                servers=[(host, port)],
+            )
+            status = await sem.enqueue()
+            assert status == "queued"
+            waiters.append(sem)
+            await asyncio.sleep(0.05)
+
+        await holder.release()
+
+        async def _wait_and_record(idx: int, sem: aclient.DistributedSemaphore):
+            ok = await sem.wait()
+            assert ok is True
+            grant_order.append(idx)
+            await sem.release()
+
+        await asyncio.gather(*[_wait_and_record(i, w) for i, w in enumerate(waiters)])
+        assert grant_order == list(range(N))
 
     async def test_distributed_semaphore_two_phase_contention(self, server_host_port):
         """sem1 holds (limit=1), sem2 enqueues+waits."""
