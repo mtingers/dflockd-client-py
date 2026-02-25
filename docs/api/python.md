@@ -25,7 +25,7 @@ from dflockd_client import (
 | `SyncDistributedLock` | `class` | Alias for `dflockd_client.sync_client.DistributedLock` |
 | `SyncDistributedSemaphore` | `class` | Alias for `dflockd_client.sync_client.DistributedSemaphore` |
 | `StatsResult` | `TypedDict` | Return type of `stats()` with `connections`, `locks`, `semaphores`, `idle_locks`, `idle_semaphores` |
-| `__version__` | `str` | Installed package version (e.g. `"1.7.0"`) |
+| `__version__` | `str` | Installed package version (e.g. `"1.7.1"`) |
 | `DEFAULT_SERVERS` | `tuple[tuple[str, int], ...]` | Default server list: `(("127.0.0.1", 6388),)` |
 | `ShardingStrategy` | `Callable[[str, int], int]` | Type alias for sharding callables |
 | `stable_hash_shard` | `function` | Default CRC-32 sharding strategy |
