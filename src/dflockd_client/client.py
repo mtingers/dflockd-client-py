@@ -37,29 +37,33 @@ async def acquire(
     key: str,
     acquire_timeout_s: int,
     lease_ttl_s: int | None = None,
+    *,
+    cmd_prefix: str = "",
+    limit: int | None = None,
 ) -> tuple[str, int]:
-    # l\nkey\n"<timeout> [<lease>]"\n
-    arg = (
-        str(acquire_timeout_s)
-        if lease_ttl_s is None
-        else f"{acquire_timeout_s} {lease_ttl_s}"
-    )
+    parts = [str(acquire_timeout_s)]
+    if limit is not None:
+        parts.append(str(limit))
+    if lease_ttl_s is not None:
+        parts.append(str(lease_ttl_s))
+    arg = " ".join(parts)
 
-    writer.write(encode_lines("l", key, arg))
+    writer.write(encode_lines(f"{cmd_prefix}l", key, arg))
     await writer.drain()
 
     resp = await _readline(reader)
+    label = f"{'semaphore ' if cmd_prefix else ''}{key!r}"
     if resp == "timeout":
-        raise TimeoutError(f"timeout acquiring {key!r}")
+        raise TimeoutError(f"timeout acquiring {label}")
     if not resp.startswith("ok "):
         raise RuntimeError(f"acquire failed: {resp!r}")
 
     # ok <token> <lease>
-    parts = resp.split()
-    if len(parts) < 2:
+    resp_parts = resp.split()
+    if len(resp_parts) < 2:
         raise RuntimeError(f"bad ok response: {resp!r}")
-    token = parts[1]
-    lease = parse_lease(parts)
+    token = resp_parts[1]
+    lease = parse_lease(resp_parts)
     return token, lease
 
 
@@ -69,17 +73,18 @@ async def renew(
     key: str,
     token: str,
     lease_ttl_s: int | None = None,
+    *,
+    cmd_prefix: str = "",
 ) -> int:
-    # n\nkey\n"<token> [<lease>]"\n
     arg = token if lease_ttl_s is None else f"{token} {lease_ttl_s}"
-    writer.write(encode_lines("n", key, arg))
+    writer.write(encode_lines(f"{cmd_prefix}n", key, arg))
     await writer.drain()
 
     resp = await _readline(reader)
+    func = f"{'sem_' if cmd_prefix else ''}renew"
     if resp != "ok" and not resp.startswith("ok "):
-        raise RuntimeError(f"renew failed: {resp!r}")
+        raise RuntimeError(f"{func} failed: {resp!r}")
 
-    # ok <seconds_remaining> (optional)
     parts = resp.split()
     if len(parts) >= 2:
         try:
@@ -94,22 +99,30 @@ async def enqueue(
     writer: asyncio.StreamWriter,
     key: str,
     lease_ttl_s: int | None = None,
+    *,
+    cmd_prefix: str = "",
+    limit: int | None = None,
 ) -> tuple[str, str | None, int | None]:
     """
     Two-phase enqueue: join FIFO queue, return immediately.
     Returns (status, token, lease) where status is "acquired" or "queued".
     """
-    arg = "" if lease_ttl_s is None else str(lease_ttl_s)
-    writer.write(encode_lines("e", key, arg))
+    parts = []
+    if limit is not None:
+        parts.append(str(limit))
+    if lease_ttl_s is not None:
+        parts.append(str(lease_ttl_s))
+    arg = " ".join(parts)
+    writer.write(encode_lines(f"{cmd_prefix}e", key, arg))
     await writer.drain()
 
     resp = await _readline(reader)
     if resp.startswith("acquired "):
-        parts = resp.split()
-        if len(parts) < 2:
+        resp_parts = resp.split()
+        if len(resp_parts) < 2:
             raise RuntimeError(f"bad acquired response: {resp!r}")
-        token = parts[1]
-        lease = parse_lease(parts)
+        token = resp_parts[1]
+        lease = parse_lease(resp_parts)
         return ("acquired", token, lease)
     if resp == "queued":
         return ("queued", None, None)
@@ -121,17 +134,20 @@ async def wait(
     writer: asyncio.StreamWriter,
     key: str,
     wait_timeout_s: int,
+    *,
+    cmd_prefix: str = "",
 ) -> tuple[str, int]:
     """
-    Two-phase wait: block until lock is granted.
+    Two-phase wait: block until lock/semaphore is granted.
     Returns (token, lease). Raises TimeoutError on timeout.
     """
-    writer.write(encode_lines("w", key, str(wait_timeout_s)))
+    writer.write(encode_lines(f"{cmd_prefix}w", key, str(wait_timeout_s)))
     await writer.drain()
 
     resp = await _readline(reader)
+    label = f"{'semaphore ' if cmd_prefix else ''}{key!r}"
     if resp == "timeout":
-        raise TimeoutError(f"timeout waiting for {key!r}")
+        raise TimeoutError(f"timeout waiting for {label}")
     if not resp.startswith("ok "):
         raise RuntimeError(f"wait failed: {resp!r}")
 
@@ -144,14 +160,20 @@ async def wait(
 
 
 async def release(
-    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, key: str, token: str
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    key: str,
+    token: str,
+    *,
+    cmd_prefix: str = "",
 ) -> None:
-    writer.write(encode_lines("r", key, token))
+    writer.write(encode_lines(f"{cmd_prefix}r", key, token))
     await writer.drain()
 
     resp = await _readline(reader)
+    func = f"{'sem_' if cmd_prefix else ''}release"
     if resp != "ok":
-        raise RuntimeError(f"release failed: {resp!r}")
+        raise RuntimeError(f"{func} failed: {resp!r}")
 
 
 async def stats(
@@ -461,7 +483,7 @@ class DistributedLock(_AsyncBase):
 
 
 # ===========================================================================
-# Semaphore protocol functions
+# Semaphore protocol wrappers (thin delegates to unified functions above)
 # ===========================================================================
 
 
@@ -475,26 +497,10 @@ async def sem_acquire(
 ) -> tuple[str, int]:
     if limit <= 0:
         raise ValueError("limit must be > 0")
-    # sl\nkey\n"<timeout> <limit> [<lease>]"\n
-    arg = f"{acquire_timeout_s} {limit}"
-    if lease_ttl_s is not None:
-        arg = f"{arg} {lease_ttl_s}"
-
-    writer.write(encode_lines("sl", key, arg))
-    await writer.drain()
-
-    resp = await _readline(reader)
-    if resp == "timeout":
-        raise TimeoutError(f"timeout acquiring semaphore {key!r}")
-    if not resp.startswith("ok "):
-        raise RuntimeError(f"sem_acquire failed: {resp!r}")
-
-    parts = resp.split()
-    if len(parts) < 2:
-        raise RuntimeError(f"bad ok response: {resp!r}")
-    token = parts[1]
-    lease = parse_lease(parts)
-    return token, lease
+    return await acquire(
+        reader, writer, key, acquire_timeout_s, lease_ttl_s,
+        cmd_prefix="s", limit=limit,
+    )
 
 
 async def sem_renew(
@@ -504,22 +510,7 @@ async def sem_renew(
     token: str,
     lease_ttl_s: int | None = None,
 ) -> int:
-    # sn\nkey\n"<token> [<lease>]"\n
-    arg = token if lease_ttl_s is None else f"{token} {lease_ttl_s}"
-    writer.write(encode_lines("sn", key, arg))
-    await writer.drain()
-
-    resp = await _readline(reader)
-    if resp != "ok" and not resp.startswith("ok "):
-        raise RuntimeError(f"sem_renew failed: {resp!r}")
-
-    parts = resp.split()
-    if len(parts) >= 2:
-        try:
-            return int(parts[1])
-        except ValueError:
-            pass
-    return -1
+    return await renew(reader, writer, key, token, lease_ttl_s, cmd_prefix="s")
 
 
 async def sem_enqueue(
@@ -529,27 +520,11 @@ async def sem_enqueue(
     limit: int,
     lease_ttl_s: int | None = None,
 ) -> tuple[str, str | None, int | None]:
-    """
-    Two-phase enqueue for semaphore: join FIFO queue, return immediately.
-    Returns (status, token, lease) where status is "acquired" or "queued".
-    """
     if limit <= 0:
         raise ValueError("limit must be > 0")
-    arg = str(limit) if lease_ttl_s is None else f"{limit} {lease_ttl_s}"
-    writer.write(encode_lines("se", key, arg))
-    await writer.drain()
-
-    resp = await _readline(reader)
-    if resp.startswith("acquired "):
-        parts = resp.split()
-        if len(parts) < 2:
-            raise RuntimeError(f"bad acquired response: {resp!r}")
-        token = parts[1]
-        lease = parse_lease(parts)
-        return ("acquired", token, lease)
-    if resp == "queued":
-        return ("queued", None, None)
-    raise RuntimeError(f"sem_enqueue failed: {resp!r}")
+    return await enqueue(
+        reader, writer, key, lease_ttl_s, cmd_prefix="s", limit=limit,
+    )
 
 
 async def sem_wait(
@@ -558,36 +533,13 @@ async def sem_wait(
     key: str,
     wait_timeout_s: int,
 ) -> tuple[str, int]:
-    """
-    Two-phase wait for semaphore: block until semaphore slot is granted.
-    Returns (token, lease). Raises TimeoutError on timeout.
-    """
-    writer.write(encode_lines("sw", key, str(wait_timeout_s)))
-    await writer.drain()
-
-    resp = await _readline(reader)
-    if resp == "timeout":
-        raise TimeoutError(f"timeout waiting for semaphore {key!r}")
-    if not resp.startswith("ok "):
-        raise RuntimeError(f"sem_wait failed: {resp!r}")
-
-    parts = resp.split()
-    if len(parts) < 2:
-        raise RuntimeError(f"bad ok response: {resp!r}")
-    token = parts[1]
-    lease = parse_lease(parts)
-    return token, lease
+    return await wait(reader, writer, key, wait_timeout_s, cmd_prefix="s")
 
 
 async def sem_release(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter, key: str, token: str
 ) -> None:
-    writer.write(encode_lines("sr", key, token))
-    await writer.drain()
-
-    resp = await _readline(reader)
-    if resp != "ok":
-        raise RuntimeError(f"sem_release failed: {resp!r}")
+    await release(reader, writer, key, token, cmd_prefix="s")
 
 
 # ===========================================================================
@@ -605,23 +557,24 @@ class DistributedSemaphore(_AsyncBase):
         super().__post_init__()
 
     async def _proto_acquire(self, reader, writer):
-        return await sem_acquire(
-            reader,
-            writer,
-            self.key,
-            self.acquire_timeout_s,
-            self.limit,
-            self.lease_ttl_s,
+        return await acquire(
+            reader, writer, self.key, self.acquire_timeout_s, self.lease_ttl_s,
+            cmd_prefix="s", limit=self.limit,
         )
 
     async def _proto_renew(self, reader, writer, token):
-        return await sem_renew(reader, writer, self.key, token, self.lease_ttl_s)
+        return await renew(
+            reader, writer, self.key, token, self.lease_ttl_s, cmd_prefix="s",
+        )
 
     async def _proto_release(self, reader, writer, token):
-        await sem_release(reader, writer, self.key, token)
+        await release(reader, writer, self.key, token, cmd_prefix="s")
 
     async def _proto_enqueue(self, reader, writer):
-        return await sem_enqueue(reader, writer, self.key, self.limit, self.lease_ttl_s)
+        return await enqueue(
+            reader, writer, self.key, self.lease_ttl_s,
+            cmd_prefix="s", limit=self.limit,
+        )
 
     async def _proto_wait(self, reader, writer, timeout):
-        return await sem_wait(reader, writer, self.key, timeout)
+        return await wait(reader, writer, self.key, timeout, cmd_prefix="s")

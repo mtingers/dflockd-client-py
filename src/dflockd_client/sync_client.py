@@ -38,26 +38,31 @@ def acquire(
     key: str,
     acquire_timeout_s: int,
     lease_ttl_s: int | None = None,
+    *,
+    cmd_prefix: str = "",
+    limit: int | None = None,
 ) -> tuple[str, int]:
-    arg = (
-        str(acquire_timeout_s)
-        if lease_ttl_s is None
-        else f"{acquire_timeout_s} {lease_ttl_s}"
-    )
+    parts = [str(acquire_timeout_s)]
+    if limit is not None:
+        parts.append(str(limit))
+    if lease_ttl_s is not None:
+        parts.append(str(lease_ttl_s))
+    arg = " ".join(parts)
 
-    sock.sendall(encode_lines("l", key, arg))
+    sock.sendall(encode_lines(f"{cmd_prefix}l", key, arg))
 
     resp = _readline(rfile)
+    label = f"{'semaphore ' if cmd_prefix else ''}{key!r}"
     if resp == "timeout":
-        raise TimeoutError(f"timeout acquiring {key!r}")
+        raise TimeoutError(f"timeout acquiring {label}")
     if not resp.startswith("ok "):
         raise RuntimeError(f"acquire failed: {resp!r}")
 
-    parts = resp.split()
-    if len(parts) < 2:
+    resp_parts = resp.split()
+    if len(resp_parts) < 2:
         raise RuntimeError(f"bad ok response: {resp!r}")
-    token = parts[1]
-    lease = parse_lease(parts)
+    token = resp_parts[1]
+    lease = parse_lease(resp_parts)
     return token, lease
 
 
@@ -67,13 +72,16 @@ def renew(
     key: str,
     token: str,
     lease_ttl_s: int | None = None,
+    *,
+    cmd_prefix: str = "",
 ) -> int:
     arg = token if lease_ttl_s is None else f"{token} {lease_ttl_s}"
-    sock.sendall(encode_lines("n", key, arg))
+    sock.sendall(encode_lines(f"{cmd_prefix}n", key, arg))
 
     resp = _readline(rfile)
+    func = f"{'sem_' if cmd_prefix else ''}renew"
     if resp != "ok" and not resp.startswith("ok "):
-        raise RuntimeError(f"renew failed: {resp!r}")
+        raise RuntimeError(f"{func} failed: {resp!r}")
 
     parts = resp.split()
     if len(parts) >= 2:
@@ -89,21 +97,29 @@ def enqueue(
     rfile: io.TextIOWrapper,
     key: str,
     lease_ttl_s: int | None = None,
+    *,
+    cmd_prefix: str = "",
+    limit: int | None = None,
 ) -> tuple[str, str | None, int | None]:
     """
     Two-phase enqueue: join FIFO queue, return immediately.
     Returns (status, token, lease) where status is "acquired" or "queued".
     """
-    arg = "" if lease_ttl_s is None else str(lease_ttl_s)
-    sock.sendall(encode_lines("e", key, arg))
+    parts = []
+    if limit is not None:
+        parts.append(str(limit))
+    if lease_ttl_s is not None:
+        parts.append(str(lease_ttl_s))
+    arg = " ".join(parts)
+    sock.sendall(encode_lines(f"{cmd_prefix}e", key, arg))
 
     resp = _readline(rfile)
     if resp.startswith("acquired "):
-        parts = resp.split()
-        if len(parts) < 2:
+        resp_parts = resp.split()
+        if len(resp_parts) < 2:
             raise RuntimeError(f"bad acquired response: {resp!r}")
-        token = parts[1]
-        lease = parse_lease(parts)
+        token = resp_parts[1]
+        lease = parse_lease(resp_parts)
         return ("acquired", token, lease)
     if resp == "queued":
         return ("queued", None, None)
@@ -115,16 +131,19 @@ def wait(
     rfile: io.TextIOWrapper,
     key: str,
     wait_timeout_s: int,
+    *,
+    cmd_prefix: str = "",
 ) -> tuple[str, int]:
     """
-    Two-phase wait: block until lock is granted.
+    Two-phase wait: block until lock/semaphore is granted.
     Returns (token, lease). Raises TimeoutError on timeout.
     """
-    sock.sendall(encode_lines("w", key, str(wait_timeout_s)))
+    sock.sendall(encode_lines(f"{cmd_prefix}w", key, str(wait_timeout_s)))
 
     resp = _readline(rfile)
+    label = f"{'semaphore ' if cmd_prefix else ''}{key!r}"
     if resp == "timeout":
-        raise TimeoutError(f"timeout waiting for {key!r}")
+        raise TimeoutError(f"timeout waiting for {label}")
     if not resp.startswith("ok "):
         raise RuntimeError(f"wait failed: {resp!r}")
 
@@ -136,12 +155,20 @@ def wait(
     return token, lease
 
 
-def release(sock: socket.socket, rfile: io.TextIOWrapper, key: str, token: str) -> None:
-    sock.sendall(encode_lines("r", key, token))
+def release(
+    sock: socket.socket,
+    rfile: io.TextIOWrapper,
+    key: str,
+    token: str,
+    *,
+    cmd_prefix: str = "",
+) -> None:
+    sock.sendall(encode_lines(f"{cmd_prefix}r", key, token))
 
     resp = _readline(rfile)
+    func = f"{'sem_' if cmd_prefix else ''}release"
     if resp != "ok":
-        raise RuntimeError(f"release failed: {resp!r}")
+        raise RuntimeError(f"{func} failed: {resp!r}")
 
 
 def stats(sock: socket.socket, rfile: io.TextIOWrapper) -> StatsResult:
@@ -489,7 +516,7 @@ class DistributedLock(_SyncBase):
 
 
 # ===========================================================================
-# Semaphore protocol functions
+# Semaphore protocol wrappers (thin delegates to unified functions above)
 # ===========================================================================
 
 
@@ -503,25 +530,10 @@ def sem_acquire(
 ) -> tuple[str, int]:
     if limit <= 0:
         raise ValueError("limit must be > 0")
-    # sl\nkey\n"<timeout> <limit> [<lease>]"\n
-    arg = f"{acquire_timeout_s} {limit}"
-    if lease_ttl_s is not None:
-        arg = f"{arg} {lease_ttl_s}"
-
-    sock.sendall(encode_lines("sl", key, arg))
-
-    resp = _readline(rfile)
-    if resp == "timeout":
-        raise TimeoutError(f"timeout acquiring semaphore {key!r}")
-    if not resp.startswith("ok "):
-        raise RuntimeError(f"sem_acquire failed: {resp!r}")
-
-    parts = resp.split()
-    if len(parts) < 2:
-        raise RuntimeError(f"bad ok response: {resp!r}")
-    token = parts[1]
-    lease = parse_lease(parts)
-    return token, lease
+    return acquire(
+        sock, rfile, key, acquire_timeout_s, lease_ttl_s,
+        cmd_prefix="s", limit=limit,
+    )
 
 
 def sem_renew(
@@ -531,21 +543,7 @@ def sem_renew(
     token: str,
     lease_ttl_s: int | None = None,
 ) -> int:
-    # sn\nkey\n"<token> [<lease>]"\n
-    arg = token if lease_ttl_s is None else f"{token} {lease_ttl_s}"
-    sock.sendall(encode_lines("sn", key, arg))
-
-    resp = _readline(rfile)
-    if resp != "ok" and not resp.startswith("ok "):
-        raise RuntimeError(f"sem_renew failed: {resp!r}")
-
-    parts = resp.split()
-    if len(parts) >= 2:
-        try:
-            return int(parts[1])
-        except ValueError:
-            pass
-    return -1
+    return renew(sock, rfile, key, token, lease_ttl_s, cmd_prefix="s")
 
 
 def sem_enqueue(
@@ -555,26 +553,9 @@ def sem_enqueue(
     limit: int,
     lease_ttl_s: int | None = None,
 ) -> tuple[str, str | None, int | None]:
-    """
-    Two-phase enqueue for semaphore: join FIFO queue, return immediately.
-    Returns (status, token, lease) where status is "acquired" or "queued".
-    """
     if limit <= 0:
         raise ValueError("limit must be > 0")
-    arg = str(limit) if lease_ttl_s is None else f"{limit} {lease_ttl_s}"
-    sock.sendall(encode_lines("se", key, arg))
-
-    resp = _readline(rfile)
-    if resp.startswith("acquired "):
-        parts = resp.split()
-        if len(parts) < 2:
-            raise RuntimeError(f"bad acquired response: {resp!r}")
-        token = parts[1]
-        lease = parse_lease(parts)
-        return ("acquired", token, lease)
-    if resp == "queued":
-        return ("queued", None, None)
-    raise RuntimeError(f"sem_enqueue failed: {resp!r}")
+    return enqueue(sock, rfile, key, lease_ttl_s, cmd_prefix="s", limit=limit)
 
 
 def sem_wait(
@@ -583,34 +564,13 @@ def sem_wait(
     key: str,
     wait_timeout_s: int,
 ) -> tuple[str, int]:
-    """
-    Two-phase wait for semaphore: block until semaphore slot is granted.
-    Returns (token, lease). Raises TimeoutError on timeout.
-    """
-    sock.sendall(encode_lines("sw", key, str(wait_timeout_s)))
-
-    resp = _readline(rfile)
-    if resp == "timeout":
-        raise TimeoutError(f"timeout waiting for semaphore {key!r}")
-    if not resp.startswith("ok "):
-        raise RuntimeError(f"sem_wait failed: {resp!r}")
-
-    parts = resp.split()
-    if len(parts) < 2:
-        raise RuntimeError(f"bad ok response: {resp!r}")
-    token = parts[1]
-    lease = parse_lease(parts)
-    return token, lease
+    return wait(sock, rfile, key, wait_timeout_s, cmd_prefix="s")
 
 
 def sem_release(
     sock: socket.socket, rfile: io.TextIOWrapper, key: str, token: str
 ) -> None:
-    sock.sendall(encode_lines("sr", key, token))
-
-    resp = _readline(rfile)
-    if resp != "ok":
-        raise RuntimeError(f"sem_release failed: {resp!r}")
+    release(sock, rfile, key, token, cmd_prefix="s")
 
 
 # ===========================================================================
@@ -628,23 +588,22 @@ class DistributedSemaphore(_SyncBase):
         super().__post_init__()
 
     def _proto_acquire(self, sock, rfile):
-        return sem_acquire(
-            sock,
-            rfile,
-            self.key,
-            self.acquire_timeout_s,
-            self.limit,
-            self.lease_ttl_s,
+        return acquire(
+            sock, rfile, self.key, self.acquire_timeout_s, self.lease_ttl_s,
+            cmd_prefix="s", limit=self.limit,
         )
 
     def _proto_renew(self, sock, rfile, token):
-        return sem_renew(sock, rfile, self.key, token, self.lease_ttl_s)
+        return renew(sock, rfile, self.key, token, self.lease_ttl_s, cmd_prefix="s")
 
     def _proto_release(self, sock, rfile, token):
-        sem_release(sock, rfile, self.key, token)
+        release(sock, rfile, self.key, token, cmd_prefix="s")
 
     def _proto_enqueue(self, sock, rfile):
-        return sem_enqueue(sock, rfile, self.key, self.limit, self.lease_ttl_s)
+        return enqueue(
+            sock, rfile, self.key, self.lease_ttl_s,
+            cmd_prefix="s", limit=self.limit,
+        )
 
     def _proto_wait(self, sock, rfile, timeout):
-        return sem_wait(sock, rfile, self.key, timeout)
+        return wait(sock, rfile, self.key, timeout, cmd_prefix="s")
