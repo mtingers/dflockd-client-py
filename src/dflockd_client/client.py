@@ -391,9 +391,7 @@ class _AsyncBase:
                 if self._closed or self._writer is not writer or self.token != token:
                     return
                 try:
-                    remaining = await self._proto_renew(
-                        reader, writer, token
-                    )
+                    remaining = await self._proto_renew(reader, writer, token)
                 except asyncio.CancelledError:
                     raise
                 except Exception:

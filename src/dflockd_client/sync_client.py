@@ -294,9 +294,7 @@ class _SyncBase:
             self._stop_event.set()
             self._renew_thread.join(timeout=5)
             if self._renew_thread.is_alive():
-                log.warning(
-                    "renew thread did not exit within 5s: key=%s", self.key
-                )
+                log.warning("renew thread did not exit within 5s: key=%s", self.key)
             self._renew_thread = None
 
     def acquire(self) -> bool:

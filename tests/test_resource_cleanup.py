@@ -236,7 +236,9 @@ class TestAsyncAcloseWaitClosedTimeout:
 
         # aclose should not hang — the wait_for timeout should fire.
         # Use a tighter overall timeout to keep the test fast.
-        with patch("dflockd_client.client.asyncio.wait_for", new_callable=lambda: AsyncMock) as mock_wait_for:
+        with patch(
+            "dflockd_client.client.asyncio.wait_for", new_callable=lambda: AsyncMock
+        ) as mock_wait_for:
             mock_wait_for.side_effect = asyncio.TimeoutError()
             await lock.aclose()
 
@@ -604,15 +606,18 @@ class TestAsyncAcloseRobustness:
 class TestEncodeLines:
     def test_basic(self):
         from dflockd_client._common import encode_lines
+
         assert encode_lines("a", "b") == b"a\nb\n"
 
     def test_rejects_newlines(self):
         from dflockd_client._common import encode_lines
+
         with pytest.raises(ValueError, match="newlines"):
             encode_lines("bad\nline")
 
     def test_rejects_cr(self):
         from dflockd_client._common import encode_lines
+
         with pytest.raises(ValueError, match="newlines"):
             encode_lines("bad\rline")
 
@@ -620,14 +625,17 @@ class TestEncodeLines:
 class TestParseLease:
     def test_valid(self):
         from dflockd_client._common import parse_lease
+
         assert parse_lease(["ok", "token", "30"]) == 30
 
     def test_missing_lease_defaults_30(self):
         from dflockd_client._common import parse_lease
+
         assert parse_lease(["ok", "token"]) == 30
 
     def test_non_integer_defaults_30(self):
         from dflockd_client._common import parse_lease
+
         assert parse_lease(["ok", "token", "abc"]) == 30
 
 
@@ -785,6 +793,7 @@ class TestDefaultServers:
     def test_default_servers_is_tuple(self):
         """DEFAULT_SERVERS should be a tuple (immutable) to prevent accidental mutation."""
         from dflockd_client.sharding import DEFAULT_SERVERS
+
         assert isinstance(DEFAULT_SERVERS, tuple)
 
     def test_lock_servers_is_copy(self):
