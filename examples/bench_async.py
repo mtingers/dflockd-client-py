@@ -9,11 +9,11 @@ Usage:
 
 import argparse
 import asyncio
+import random
 import statistics
 import time
-import random
 
-from dflockd_client.client import DistributedLock
+from dflockd_client.client import acquire, release
 
 
 def parse_servers(raw: str) -> list[tuple[str, int]]:
@@ -28,16 +28,19 @@ async def worker(
     key: str,
     rounds: int,
     timeout_s: int,
-    servers: list[tuple[str, int]],
+    server: tuple[str, int],
 ) -> list[float]:
+    reader, writer = await asyncio.open_connection(*server)
     latencies: list[float] = []
-    for _ in range(rounds):
-        t0 = time.perf_counter()
-        async with DistributedLock(
-            key, acquire_timeout_s=timeout_s, lease_ttl_s=10, servers=servers
-        ):
-            pass  # acquire + immediate release
-        latencies.append(time.perf_counter() - t0)
+    try:
+        for _ in range(rounds):
+            t0 = time.perf_counter()
+            token, _ = await acquire(reader, writer, key, timeout_s, lease_ttl_s=10)
+            await release(reader, writer, key, token)
+            latencies.append(time.perf_counter() - t0)
+    finally:
+        writer.close()
+        await writer.wait_closed()
     return latencies
 
 
@@ -47,11 +50,15 @@ async def run(
     print(f"bench_async: {workers} workers x {rounds} rounds (key_prefix={key!r})")
     print()
 
+    server = servers[0]
     t_start = time.perf_counter()
     results = await asyncio.gather(
         *(
             worker(
-                f"{key}_{random.randint(100000, 10000000)}", rounds, timeout_s, servers
+                f"{key}_{random.randint(100000, 10000000)}",
+                rounds,
+                timeout_s,
+                server,
             )
             for _ in range(workers)
         )

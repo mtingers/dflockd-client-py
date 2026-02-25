@@ -8,11 +8,12 @@ Usage:
 """
 
 import argparse
+import socket
 import statistics
 import threading
 import time
 
-from dflockd_client.sync_client import DistributedLock
+from dflockd_client.sync_client import acquire, release
 
 
 def parse_servers(raw: str) -> list[tuple[str, int]]:
@@ -27,16 +28,22 @@ def worker(
     key: str,
     rounds: int,
     timeout_s: int,
-    servers: list[tuple[str, int]],
+    server: tuple[str, int],
     results: list[list[float]],
     idx: int,
 ) -> None:
+    sock = socket.create_connection(server)
+    rfile = sock.makefile("r", encoding="utf-8")
     latencies: list[float] = []
-    for _ in range(rounds):
-        t0 = time.perf_counter()
-        with DistributedLock(key, acquire_timeout_s=timeout_s, lease_ttl_s=10, servers=servers):
-            pass  # acquire + immediate release
-        latencies.append(time.perf_counter() - t0)
+    try:
+        for _ in range(rounds):
+            t0 = time.perf_counter()
+            token, _ = acquire(sock, rfile, key, timeout_s, lease_ttl_s=10)
+            release(sock, rfile, key, token)
+            latencies.append(time.perf_counter() - t0)
+    finally:
+        rfile.close()
+        sock.close()
     results[idx] = latencies
 
 
@@ -44,9 +51,10 @@ def run(workers: int, rounds: int, key: str, timeout_s: int, servers: list[tuple
     print(f"bench_sync: {workers} workers x {rounds} rounds (key={key!r})")
     print()
 
+    server = servers[0]
     results: list[list[float]] = [[] for _ in range(workers)]
     threads = [
-        threading.Thread(target=worker, args=(key, rounds, timeout_s, servers, results, i))
+        threading.Thread(target=worker, args=(key, rounds, timeout_s, server, results, i))
         for i in range(workers)
     ]
 
