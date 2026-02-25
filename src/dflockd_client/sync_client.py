@@ -458,6 +458,7 @@ class _SyncBase:
             self._rfile = None
             self._sock = None
             self.token = None
+            self.lease = 0
         t = self._renew_thread
         if t is not None and t is not threading.current_thread():
             t.join(timeout=5)

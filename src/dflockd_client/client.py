@@ -23,8 +23,6 @@ async def _readline(reader: asyncio.StreamReader) -> str:
         raise RuntimeError("server response exceeded line length limit") from e
     if raw == b"":
         raise ConnectionError("server closed connection")
-    if len(raw) > _MAX_LINE_LEN:
-        raise RuntimeError(f"server response too large ({len(raw)} bytes)")
     return raw.decode("utf-8").rstrip("\r\n")
 
 
@@ -434,6 +432,7 @@ class _AsyncBase:
         self._reader = None
         self._writer = None
         self.token = None
+        self.lease = 0
 
 
 # ===========================================================================
