@@ -248,6 +248,73 @@ sock.close()
 
 Returns a dict with `connections`, `locks`, `semaphores`, `idle_locks`, and `idle_semaphores`.
 
+## Signals (pub/sub)
+
+`SignalConn` provides pub/sub messaging through named channels with NATS-style wildcard patterns.
+
+### Sync client
+
+```python
+from dflockd_client.sync_client import SignalConn
+
+# Listener
+with SignalConn(server=("127.0.0.1", 6388)) as listener:
+    listener.listen("events.>")  # wildcard: matches events.user.login, events.order.created, etc.
+
+    # Emit from another connection
+    with SignalConn(server=("127.0.0.1", 6388)) as emitter:
+        emitter.emit("events.user.login", "alice")
+
+    for sig in listener:
+        print(sig.channel, sig.payload)
+        break
+```
+
+### Async client
+
+```python
+import asyncio
+from dflockd_client.client import SignalConn
+
+async def main():
+    async with SignalConn(server=("127.0.0.1", 6388)) as listener:
+        await listener.listen("events.>")
+
+        async with SignalConn(server=("127.0.0.1", 6388)) as emitter:
+            await emitter.emit("events.user.login", "alice")
+
+        async for sig in listener:
+            print(sig.channel, sig.payload)
+            break
+
+asyncio.run(main())
+```
+
+> **Tip:** You can also use the top-level import alias:
+> `from dflockd_client import SyncSignalConn` (or `AsyncSignalConn` for async).
+
+### Wildcard patterns
+
+- `*` matches exactly one dot-separated token: `events.*.login` matches `events.user.login`
+- `>` matches one or more trailing tokens: `events.>` matches `events.user.login`, `events.order.created`
+
+### Queue groups
+
+Queue groups provide load-balanced delivery — within a group, each signal is delivered to exactly one member via round-robin:
+
+```python
+listener.listen("jobs.>", group="workers")
+```
+
+### Parameters
+
+| Parameter           | Default                 | Description                                                              |
+| ------------------- | ----------------------- | ------------------------------------------------------------------------ |
+| `server`            | `("127.0.0.1", 6388)`  | `(host, port)` tuple                                                     |
+| `ssl_context`       | `None`                  | `ssl.SSLContext` for TLS connections. `None` uses plain TCP               |
+| `auth_token`        | `None`                  | Auth token for servers started with `--auth-token`. `None` skips auth     |
+| `connect_timeout_s` | `10`                    | Seconds to wait for the TCP connection to the server                      |
+
 ## Multi-server sharding
 
 When running multiple dflockd instances, the client can distribute keys across servers using consistent hashing. Each key always routes to the same server.

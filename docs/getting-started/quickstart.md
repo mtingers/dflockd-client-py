@@ -75,6 +75,36 @@ with DistributedSemaphore("my-key", limit=3, acquire_timeout_s=10) as sem:
     # up to 3 holders at once
 ```
 
+## Subscribe to signals
+
+Use `SignalConn` for pub/sub messaging:
+
+### Async client
+
+```python
+import asyncio
+from dflockd_client.client import SignalConn
+
+async def main():
+    async with SignalConn(server=("127.0.0.1", 6388)) as sc:
+        await sc.listen("events.>")
+        async for sig in sc:
+            print(f"{sig.channel}: {sig.payload}")
+
+asyncio.run(main())
+```
+
+### Sync client
+
+```python
+from dflockd_client.sync_client import SignalConn
+
+with SignalConn(server=("127.0.0.1", 6388)) as sc:
+    sc.listen("events.>")
+    for sig in sc:
+        print(f"{sig.channel}: {sig.payload}")
+```
+
 ## Query server stats
 
 Use the low-level `stats()` function to inspect the server's current state:

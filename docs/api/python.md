@@ -29,6 +29,9 @@ from dflockd_client import (
 | `DEFAULT_SERVERS` | `tuple[tuple[str, int], ...]` | Default server list: `(("127.0.0.1", 6388),)` |
 | `ShardingStrategy` | `Callable[[str, int], int]` | Type alias for sharding callables |
 | `stable_hash_shard` | `function` | Default CRC-32 sharding strategy |
+| `Signal` | `NamedTuple` | Received signal with `channel` and `payload` fields |
+| `AsyncSignalConn` | `class` | Alias for `dflockd_client.client.SignalConn` |
+| `SyncSignalConn` | `class` | Alias for `dflockd_client.sync_client.SignalConn` |
 
 ---
 
@@ -252,6 +255,57 @@ async def sem_wait(
 
 Two-phase step 2: block until a semaphore slot is granted. Returns `(token, lease)`. Raises `TimeoutError` on timeout.
 
+### SignalConn
+
+```python
+@dataclass
+class SignalConn:
+    server: tuple[str, int] = ("127.0.0.1", 6388)
+    ssl_context: ssl.SSLContext | None = None
+    auth_token: str | None = None
+    connect_timeout_s: float = 10
+```
+
+**Methods:**
+
+| Method | Returns | Description |
+|---|---|---|
+| `await connect()` | `None` | Connect to the server and start background reader |
+| `await listen(pattern, *, group="")` | `None` | Subscribe to signals matching pattern |
+| `await unlisten(pattern, *, group="")` | `None` | Remove a signal subscription |
+| `await emit(channel, payload)` | `int` | Publish a signal. Returns delivery count |
+| `await aclose()` | `None` | Close the connection |
+
+**Context manager / iteration:**
+
+```python
+async with SignalConn(server=("127.0.0.1", 6388)) as sc:
+    await sc.listen("events.>")
+    async for sig in sc:  # sig.channel, sig.payload
+        ...
+```
+
+**Property:**
+
+| Property | Type | Description |
+|---|---|---|
+| `signals` | `asyncio.Queue[Signal \| None]` | Queue of received signals. `None` sentinel indicates connection closed |
+
+### Low-level signal functions
+
+#### sig_emit
+
+```python
+async def sig_emit(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    channel: str,
+    payload: str,
+) -> int
+```
+
+Emit a signal on a literal channel (no wildcards). Returns the number of listeners delivered to. Works on a plain reader/writer pair without a `SignalConn`.
+
 ---
 
 ## dflockd_client.sync_client
@@ -461,6 +515,57 @@ def sem_wait(
 ```
 
 Two-phase step 2: block until a semaphore slot is granted. Returns `(token, lease)`. Raises `TimeoutError` on timeout.
+
+### SignalConn
+
+```python
+@dataclass
+class SignalConn:
+    server: tuple[str, int] = ("127.0.0.1", 6388)
+    ssl_context: ssl.SSLContext | None = None
+    auth_token: str | None = None
+    connect_timeout_s: float = 10
+```
+
+**Methods:**
+
+| Method | Returns | Description |
+|---|---|---|
+| `connect()` | `None` | Connect to the server and start background reader thread |
+| `listen(pattern, *, group="")` | `None` | Subscribe to signals matching pattern |
+| `unlisten(pattern, *, group="")` | `None` | Remove a signal subscription |
+| `emit(channel, payload)` | `int` | Publish a signal. Returns delivery count |
+| `close()` | `None` | Close the connection |
+
+**Context manager / iteration:**
+
+```python
+with SignalConn(server=("127.0.0.1", 6388)) as sc:
+    sc.listen("events.>")
+    for sig in sc:  # sig.channel, sig.payload
+        ...
+```
+
+**Property:**
+
+| Property | Type | Description |
+|---|---|---|
+| `signals` | `queue.Queue[Signal \| None]` | Queue of received signals. `None` sentinel indicates connection closed |
+
+### Low-level signal functions
+
+#### sig_emit
+
+```python
+def sig_emit(
+    sock: socket.socket,
+    rfile: io.TextIOWrapper,
+    channel: str,
+    payload: str,
+) -> int
+```
+
+Emit a signal on a literal channel (no wildcards). Returns the number of listeners delivered to. Works on a plain sock/rfile pair without a `SignalConn`.
 
 ---
 

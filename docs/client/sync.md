@@ -1,15 +1,15 @@
 # Sync Client
 
-The sync client uses standard `socket` and `threading` for blocking lock and semaphore operations with automatic background lease renewal. No asyncio required.
+The sync client uses standard `socket` and `threading` for blocking lock, semaphore, and signal operations with automatic background lease renewal. No asyncio required.
 
 ```python
-from dflockd_client.sync_client import DistributedLock, DistributedSemaphore
+from dflockd_client.sync_client import DistributedLock, DistributedSemaphore, SignalConn
 ```
 
 **Alternative top-level imports** (equivalent):
 
 ```python
-from dflockd_client import SyncDistributedLock, SyncDistributedSemaphore
+from dflockd_client import SyncDistributedLock, SyncDistributedSemaphore, SyncSignalConn
 ```
 
 ## Context manager
@@ -252,6 +252,96 @@ rfile.close()
 sock.close()
 ```
 
+## Signals (pub/sub)
+
+`SignalConn` provides pub/sub messaging through named channels with NATS-style wildcard pattern matching.
+
+### Context manager
+
+```python
+from dflockd_client.sync_client import SignalConn
+
+with SignalConn(server=("127.0.0.1", 6388)) as sc:
+    sc.listen("events.>")
+    for sig in sc:
+        print(f"{sig.channel}: {sig.payload}")
+```
+
+### Listen and emit
+
+```python
+sc = SignalConn(server=("127.0.0.1", 6388))
+sc.connect()
+
+sc.listen("events.user.*")          # subscribe with wildcard
+n = sc.emit("events.user.login", "alice")  # publish; returns delivery count
+sc.unlisten("events.user.*")        # unsubscribe
+
+sc.close()
+```
+
+### Wildcard patterns
+
+- `*` matches exactly one dot-separated token: `events.*.login` matches `events.user.login`
+- `>` matches one or more trailing tokens: `events.>` matches `events.user.login`, `events.order.created`
+
+### Queue groups
+
+Queue groups provide load-balanced delivery — within a group, each signal is delivered to exactly one member via round-robin:
+
+```python
+sc.listen("jobs.>", group="workers")
+```
+
+Multiple queue groups on the same pattern operate independently.
+
+### Consuming signals
+
+Signals are delivered asynchronously via a background reader thread. There are two ways to consume them:
+
+**Iteration** (recommended):
+
+```python
+for sig in sc:
+    print(sig.channel, sig.payload)
+```
+
+Iteration ends cleanly when the connection is closed.
+
+**Direct queue access:**
+
+```python
+sig = sc.signals.get()
+if sig is None:
+    print("connection closed")
+```
+
+The `signals` property returns a `queue.Queue[Signal | None]`. A `None` sentinel indicates the connection has been closed.
+
+### Signal parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `server` | `tuple[str, int]` | `("127.0.0.1", 6388)` | Server address |
+| `ssl_context` | `ssl.SSLContext \| None` | `None` | TLS context. `None` uses plain TCP |
+| `auth_token` | `str \| None` | `None` | Auth token. `None` skips auth |
+| `connect_timeout_s` | `float` | `10` | Seconds to wait for the TCP connection |
+
+### Low-level sig_emit
+
+For fire-and-forget publishing without a `SignalConn` (no background reader needed):
+
+```python
+import socket
+from dflockd_client.sync_client import sig_emit
+
+sock = socket.create_connection(("127.0.0.1", 6388))
+rfile = sock.makefile("r", encoding="utf-8")
+n = sig_emit(sock, rfile, "events.user.login", "alice")
+rfile.close()
+sock.close()
+```
+
 ## Stats
 
 Query the server for current state using the low-level `stats()` function:
@@ -289,3 +379,5 @@ Returns a `StatsResult` TypedDict with:
 | Renewal | `asyncio.Task` | `threading.Thread` (daemon) |
 | Cleanup | `await lock.aclose()` | `lock.close()` |
 | Best for | asyncio applications, high concurrency | Scripts, threads, simple applications |
+| Signal conn | `SignalConn` / `AsyncSignalConn` | `SignalConn` / `SyncSignalConn` |
+| Signal cleanup | `await sc.aclose()` | `sc.close()` |

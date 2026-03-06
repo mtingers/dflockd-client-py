@@ -11,6 +11,7 @@ The dflockd-client library provides async and sync Python clients for [dflockd](
 │  ┌───────────┐  ┌───────────┐  │
 │  │  Async    │  │  Sync     │  │
 │  │  Client   │  │  Client   │  │
+│  │  +Signals │  │  +Signals │  │
 │  └─────┬─────┘  └─────┬─────┘  │
 │        │              │         │
 │  ┌─────┴──────────────┴─────┐  │
@@ -54,6 +55,20 @@ Once a lock or semaphore is acquired, the client starts a background renewal loo
 
 If renewal fails (server unreachable, lease already expired), the client logs an error and sets `token = None`.
 
+### Signals (pub/sub)
+
+`SignalConn` provides a separate connection type for pub/sub messaging. Unlike locks and semaphores, signals use a background reader that demultiplexes push messages (`sig <channel> <payload>`) from command responses:
+
+1. `connect()` opens a TCP connection and starts a background reader (asyncio task or daemon thread).
+2. `listen(pattern)` subscribes to channels matching a NATS-style wildcard pattern. Optional `group` parameter enables queue-group load balancing.
+3. `emit(channel, payload)` publishes a signal on a literal channel (no wildcards). Returns the number of listeners delivered to.
+4. `unlisten(pattern)` removes a subscription.
+5. `close()` / `aclose()` shuts down the background reader and closes the connection.
+
+Signals are delivered to a queue (`asyncio.Queue` or `queue.Queue`) that can be consumed via iteration (`for sig in sc:` / `async for sig in sc:`). A `None` sentinel in the queue indicates the connection has been closed.
+
+A standalone `sig_emit()` function is also available for fire-and-forget publishing on plain connections without the background reader overhead.
+
 ### Stats
 
 The `stats()` function sends a `stats` command to the server and returns a JSON dict with the current server state: active connections, held locks (with owner, lease expiry, and waiter counts), active semaphores (with holder and waiter counts), and idle entries. This is a low-level function that operates on an existing connection.
@@ -79,7 +94,7 @@ When multiple servers are configured, the client uses a sharding strategy to det
 | Module | Description |
 |---|---|
 | `dflockd_client` | Top-level package with convenience re-exports (`AsyncDistributedLock`, `SyncDistributedLock`, etc.) |
-| `dflockd_client._common` | Shared protocol helpers: `encode_lines()`, `parse_lease()`, `StatsResult`, response size limits |
+| `dflockd_client._common` | Shared protocol helpers: `encode_lines()`, `parse_lease()`, `StatsResult`, `Signal`, response size limits |
 | `dflockd_client.client` | Async client (`asyncio`-based), extends `_AsyncBase` |
 | `dflockd_client.sync_client` | Sync client (`socket` + `threading`-based), extends `_SyncBase` |
 | `dflockd_client.sharding` | Sharding strategy and defaults |

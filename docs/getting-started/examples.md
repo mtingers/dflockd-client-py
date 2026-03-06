@@ -317,6 +317,89 @@ Connect to a TLS-enabled dflockd server using an `ssl.SSLContext`:
 
 The same `ssl_context` parameter works on `DistributedSemaphore`.
 
+## Signals — pub/sub messaging
+
+Subscribe to channels with wildcard patterns and receive signals in real time:
+
+=== "Async"
+
+    ```python
+    import asyncio
+    from dflockd_client.client import SignalConn
+
+    async def main():
+        async with SignalConn(server=("127.0.0.1", 6388)) as listener:
+            await listener.listen("events.>")
+
+            # Emit from a separate connection
+            async with SignalConn(server=("127.0.0.1", 6388)) as emitter:
+                n = await emitter.emit("events.user.login", "alice")
+                print(f"delivered to {n} listener(s)")
+
+            async for sig in listener:
+                print(f"{sig.channel}: {sig.payload}")
+                break
+
+    asyncio.run(main())
+    ```
+
+=== "Sync"
+
+    ```python
+    from dflockd_client.sync_client import SignalConn
+
+    with SignalConn(server=("127.0.0.1", 6388)) as listener:
+        listener.listen("events.>")
+
+        with SignalConn(server=("127.0.0.1", 6388)) as emitter:
+            n = emitter.emit("events.user.login", "alice")
+            print(f"delivered to {n} listener(s)")
+
+        for sig in listener:
+            print(f"{sig.channel}: {sig.payload}")
+            break
+    ```
+
+## Signal queue groups
+
+Load-balance signals across multiple consumers using queue groups. Within a group, each signal is delivered to exactly one member via round-robin:
+
+=== "Async"
+
+    ```python
+    import asyncio
+    from dflockd_client.client import SignalConn
+
+    async def worker(name: str, host: str, port: int):
+        async with SignalConn(server=(host, port)) as sc:
+            await sc.listen("jobs.>", group="workers")
+            async for sig in sc:
+                print(f"{name} got: {sig.channel} {sig.payload}")
+
+    async def main():
+        tasks = [worker(f"w{i}", "127.0.0.1", 6388) for i in range(3)]
+        await asyncio.gather(*tasks)
+
+    asyncio.run(main())
+    ```
+
+=== "Sync"
+
+    ```python
+    import threading
+    from dflockd_client.sync_client import SignalConn
+
+    def worker(name: str, host: str, port: int):
+        with SignalConn(server=(host, port)) as sc:
+            sc.listen("jobs.>", group="workers")
+            for sig in sc:
+                print(f"{name} got: {sig.channel} {sig.payload}")
+
+    threads = [threading.Thread(target=worker, args=(f"w{i}", "127.0.0.1", 6388)) for i in range(3)]
+    for t in threads:
+        t.start()
+    ```
+
 ## Multi-server sharding
 
 Distribute keys across multiple dflockd instances. Each key deterministically routes to the same server:
