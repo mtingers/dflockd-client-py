@@ -1,5 +1,6 @@
 import io
 import json
+import queue
 import socket
 import ssl
 import threading
@@ -10,6 +11,7 @@ from typing import TextIO
 from ._common import (
     _CONNECT_TIMEOUT_S,
     _MAX_LINE_LEN,
+    Signal,
     StatsResult,
     encode_lines,
     log,
@@ -621,3 +623,237 @@ class DistributedSemaphore(_SyncBase):
 
     def _proto_wait(self, sock, rfile, timeout):
         return wait(sock, rfile, self.key, timeout, cmd_prefix="s")
+
+
+# ===========================================================================
+# Signal protocol functions
+# ===========================================================================
+
+
+def sig_emit(
+    sock: socket.socket,
+    rfile: io.TextIOWrapper,
+    channel: str,
+    payload: str,
+) -> int:
+    """Emit a signal on a literal channel (no wildcards).
+
+    Returns the number of listeners the signal was delivered to.
+    Works on a plain sock/rfile pair without a SignalConn.
+    """
+    if "*" in channel or ">" in channel:
+        raise ValueError("channel must not contain wildcards (* or >)")
+    sock.sendall(encode_lines("signal", channel, payload))
+    resp = _readline(rfile)
+    if not resp.startswith("ok "):
+        raise RuntimeError(f"signal failed: {resp!r}")
+    parts = resp.split()
+    if len(parts) < 2:
+        raise RuntimeError(f"bad signal response: {resp!r}")
+    try:
+        return int(parts[1])
+    except ValueError as e:
+        raise RuntimeError(f"bad signal response: {resp!r}") from e
+
+
+# ===========================================================================
+# SignalConn (sync)
+# ===========================================================================
+
+
+@dataclass
+class SignalConn:
+    """Sync pub/sub signal connection.
+
+    Maintains a background reader thread that routes push signals to a queue
+    while allowing listen/unlisten/emit commands.
+
+    Usage::
+
+        with SignalConn(server=("127.0.0.1", 6388)) as sc:
+            sc.listen("events.>")
+            sc.emit("events.user.login", "alice")
+            for sig in sc:
+                print(sig.channel, sig.payload)
+    """
+
+    _: KW_ONLY
+    server: tuple[str, int] = ("127.0.0.1", 6388)
+    ssl_context: ssl.SSLContext | None = None
+    auth_token: str | None = None
+    connect_timeout_s: float = _CONNECT_TIMEOUT_S
+
+    _sock: socket.socket | None = field(default=None, init=False, repr=False)
+    _rfile: io.TextIOWrapper | None = field(default=None, init=False, repr=False)
+    _read_thread: threading.Thread | None = field(
+        default=None, init=False, repr=False
+    )
+    _sig_queue: queue.Queue[Signal | None] = field(
+        default_factory=lambda: queue.Queue(maxsize=64), init=False, repr=False
+    )
+    _resp_queue: queue.Queue[str] = field(
+        default_factory=lambda: queue.Queue(maxsize=1), init=False, repr=False
+    )
+    _cmd_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
+    )
+    _closed: bool = field(default=False, init=False, repr=False)
+
+    def connect(self) -> None:
+        """Connect to the server and start the background reader thread."""
+        host, port = self.server
+        sock = socket.create_connection((host, port), timeout=self.connect_timeout_s)
+        try:
+            if self.ssl_context is not None:
+                sock = self.ssl_context.wrap_socket(sock, server_hostname=host)
+            sock.settimeout(self.connect_timeout_s)
+            self._sock = sock
+            self._rfile = sock.makefile("r", encoding="utf-8")
+        except BaseException:
+            sock.close()
+            self._sock = None
+            self._rfile = None
+            raise
+        if self.auth_token is not None:
+            try:
+                self._sock.sendall(encode_lines("auth", "_", self.auth_token))
+                resp = _readline(self._rfile)
+            except BaseException:
+                self.close()
+                raise
+            if resp != "ok":
+                self.close()
+                raise PermissionError(f"authentication failed: {resp!r}")
+        self._sock.settimeout(None)
+        self._read_thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._read_thread.start()
+
+    def _read_loop(self) -> None:
+        try:
+            while True:
+                assert self._rfile is not None
+                line = _readline(self._rfile)
+                if line.startswith("sig "):
+                    rest = line[4:]
+                    idx = rest.find(" ")
+                    if idx < 0:
+                        continue
+                    sig = Signal(channel=rest[:idx], payload=rest[idx + 1 :])
+                    try:
+                        self._sig_queue.put_nowait(sig)
+                    except queue.Full:
+                        pass
+                else:
+                    self._resp_queue.put(line)
+        except (ConnectionError, RuntimeError, OSError, ValueError):
+            pass
+        finally:
+            try:
+                self._sig_queue.put_nowait(None)
+            except queue.Full:
+                pass
+
+    def _send_cmd(self, cmd: str, key: str, arg: str) -> str:
+        if self._sock is None:
+            raise RuntimeError("not connected; call connect() first")
+        with self._cmd_lock:
+            # Drain any stale response.
+            try:
+                self._resp_queue.get_nowait()
+            except queue.Empty:
+                pass
+            self._sock.sendall(encode_lines(cmd, key, arg))
+            while True:
+                try:
+                    return self._resp_queue.get(timeout=1)
+                except queue.Empty:
+                    if self._closed or (
+                        self._read_thread is not None
+                        and not self._read_thread.is_alive()
+                    ):
+                        raise ConnectionError("connection closed")
+
+    def listen(self, pattern: str, *, group: str = "") -> None:
+        """Subscribe to signals matching *pattern*.
+
+        Supports NATS-style wildcards: ``*`` matches one token,
+        ``>`` matches one or more trailing tokens.
+        *group* enables queue-group load balancing (round-robin within group).
+        """
+        resp = self._send_cmd("listen", pattern, group)
+        if resp != "ok":
+            raise RuntimeError(f"listen failed: {resp!r}")
+
+    def unlisten(self, pattern: str, *, group: str = "") -> None:
+        """Remove a signal subscription. Pattern and group must match the
+        original :meth:`listen` call."""
+        resp = self._send_cmd("unlisten", pattern, group)
+        if resp != "ok":
+            raise RuntimeError(f"unlisten failed: {resp!r}")
+
+    def emit(self, channel: str, payload: str) -> int:
+        """Publish a signal on a literal channel (no wildcards).
+
+        Returns the number of listeners the signal was delivered to.
+        """
+        if "*" in channel or ">" in channel:
+            raise ValueError("channel must not contain wildcards (* or >)")
+        resp = self._send_cmd("signal", channel, payload)
+        if not resp.startswith("ok "):
+            raise RuntimeError(f"signal failed: {resp!r}")
+        parts = resp.split()
+        if len(parts) < 2:
+            raise RuntimeError(f"bad signal response: {resp!r}")
+        try:
+            return int(parts[1])
+        except ValueError as e:
+            raise RuntimeError(f"bad signal response: {resp!r}") from e
+
+    @property
+    def signals(self) -> queue.Queue[Signal | None]:
+        """Queue of received signals. ``None`` sentinel indicates connection closed."""
+        return self._sig_queue
+
+    def __iter__(self):
+        return self._iter_signals()
+
+    def _iter_signals(self):
+        while True:
+            item = self._sig_queue.get()
+            if item is None:
+                return
+            yield item
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
+    def close(self) -> None:
+        """Close the connection and stop the background reader thread."""
+        if self._closed:
+            return
+        self._closed = True
+        sock = self._sock
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        if self._rfile is not None:
+            try:
+                self._rfile.close()
+            except Exception:
+                pass
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+        self._rfile = None
+        self._sock = None
+        if self._read_thread is not None:
+            self._read_thread.join(timeout=5)
+            self._read_thread = None

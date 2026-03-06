@@ -1,11 +1,13 @@
 from importlib.metadata import PackageNotFoundError, version
 
-from ._common import StatsResult
+from ._common import Signal, StatsResult
 from .client import DistributedLock as AsyncDistributedLock
 from .client import DistributedSemaphore as AsyncDistributedSemaphore
 from .sharding import DEFAULT_SERVERS, ShardingStrategy, stable_hash_shard
 from .sync_client import DistributedLock as SyncDistributedLock
 from .sync_client import DistributedSemaphore as SyncDistributedSemaphore
+from .client import SignalConn as AsyncSignalConn
+from .sync_client import SignalConn as SyncSignalConn
 
 try:
     __version__ = version("dflockd-client")
@@ -22,4 +24,7 @@ __all__ = [
     "AsyncDistributedSemaphore",
     "SyncDistributedLock",
     "SyncDistributedSemaphore",
+    "Signal",
+    "AsyncSignalConn",
+    "SyncSignalConn",
 ]

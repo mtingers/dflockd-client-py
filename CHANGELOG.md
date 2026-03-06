@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.8.0] - 2026-03-06
+
+### Added
+
+- Signal (pub/sub) support: `AsyncSignalConn` and `SyncSignalConn` high-level classes with background reader for push delivery
+- `listen(pattern, group=)` / `unlisten(pattern, group=)` for subscribing to channels with NATS-style wildcards (`*`, `>`)
+- `emit(channel, payload)` for publishing signals on literal channels; returns delivery count
+- Queue group support for load-balanced signal delivery (round-robin within a group)
+- `Signal` NamedTuple (`channel`, `payload`) for received signals
+- Low-level `sig_emit()` protocol function for fire-and-forget publishing on plain connections
+- Iteration support: `async for sig in conn:` / `for sig in conn:` with clean termination on disconnect
+- Context manager support (`async with` / `with`) for signal connections
+- Signal test suite with unit and integration tests
+
+[v1.8.0]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.8.0
+
 ## [v1.7.3] - 2026-03-06
 
 ### Fixed

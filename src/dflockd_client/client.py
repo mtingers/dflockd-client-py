@@ -8,6 +8,7 @@ from dataclasses import KW_ONLY, dataclass, field
 from ._common import (
     _CONNECT_TIMEOUT_S,
     _MAX_LINE_LEN,
+    Signal,
     StatsResult,
     encode_lines,
     log,
@@ -602,3 +603,224 @@ class DistributedSemaphore(_AsyncBase):
 
     async def _proto_wait(self, reader, writer, timeout):
         return await wait(reader, writer, self.key, timeout, cmd_prefix="s")
+
+
+# ===========================================================================
+# Signal protocol functions
+# ===========================================================================
+
+
+async def sig_emit(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    channel: str,
+    payload: str,
+) -> int:
+    """Emit a signal on a literal channel (no wildcards).
+
+    Returns the number of listeners the signal was delivered to.
+    Works on a plain reader/writer pair without a SignalConn.
+    """
+    if "*" in channel or ">" in channel:
+        raise ValueError("channel must not contain wildcards (* or >)")
+    writer.write(encode_lines("signal", channel, payload))
+    await writer.drain()
+    resp = await _readline(reader)
+    if not resp.startswith("ok "):
+        raise RuntimeError(f"signal failed: {resp!r}")
+    parts = resp.split()
+    if len(parts) < 2:
+        raise RuntimeError(f"bad signal response: {resp!r}")
+    try:
+        return int(parts[1])
+    except ValueError as e:
+        raise RuntimeError(f"bad signal response: {resp!r}") from e
+
+
+# ===========================================================================
+# SignalConn (async)
+# ===========================================================================
+
+
+@dataclass
+class SignalConn:
+    """Async pub/sub signal connection.
+
+    Maintains a background reader that routes push signals to a queue
+    while allowing listen/unlisten/emit commands.
+
+    Usage::
+
+        async with SignalConn(server=("127.0.0.1", 6388)) as sc:
+            await sc.listen("events.>")
+            await sc.emit("events.user.login", "alice")
+            async for sig in sc:
+                print(sig.channel, sig.payload)
+    """
+
+    _: KW_ONLY
+    server: tuple[str, int] = ("127.0.0.1", 6388)
+    ssl_context: ssl.SSLContext | None = None
+    auth_token: str | None = None
+    connect_timeout_s: float = _CONNECT_TIMEOUT_S
+
+    _reader: asyncio.StreamReader | None = field(default=None, init=False, repr=False)
+    _writer: asyncio.StreamWriter | None = field(default=None, init=False, repr=False)
+    _read_task: asyncio.Task[None] | None = field(
+        default=None, init=False, repr=False
+    )
+    _sig_queue: asyncio.Queue[Signal | None] = field(
+        default_factory=lambda: asyncio.Queue(maxsize=64), init=False, repr=False
+    )
+    _cmd_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock, init=False, repr=False
+    )
+    _resp_future: asyncio.Future[str] | None = field(
+        default=None, init=False, repr=False
+    )
+    _closed: bool = field(default=False, init=False, repr=False)
+
+    async def connect(self) -> None:
+        """Connect to the server and start the background reader."""
+        host, port = self.server
+        self._reader, self._writer = await asyncio.wait_for(
+            asyncio.open_connection(
+                host, port, ssl=self.ssl_context, limit=_MAX_LINE_LEN
+            ),
+            timeout=self.connect_timeout_s,
+        )
+        if self.auth_token is not None:
+            try:
+                self._writer.write(encode_lines("auth", "_", self.auth_token))
+                await self._writer.drain()
+                resp = await asyncio.wait_for(
+                    _readline(self._reader), timeout=self.connect_timeout_s
+                )
+            except BaseException:
+                await self.aclose()
+                raise
+            if resp != "ok":
+                await self.aclose()
+                raise PermissionError(f"authentication failed: {resp!r}")
+        self._read_task = asyncio.create_task(self._read_loop())
+
+    async def _read_loop(self) -> None:
+        assert self._reader is not None
+        try:
+            while True:
+                line = await _readline(self._reader)
+                if line.startswith("sig "):
+                    rest = line[4:]
+                    idx = rest.find(" ")
+                    if idx < 0:
+                        continue
+                    sig = Signal(channel=rest[:idx], payload=rest[idx + 1 :])
+                    try:
+                        self._sig_queue.put_nowait(sig)
+                    except asyncio.QueueFull:
+                        pass
+                else:
+                    fut = self._resp_future
+                    if fut is not None and not fut.done():
+                        fut.set_result(line)
+        except (ConnectionError, asyncio.CancelledError, RuntimeError):
+            pass
+        finally:
+            fut = self._resp_future
+            if fut is not None and not fut.done():
+                fut.set_exception(ConnectionError("connection closed"))
+            try:
+                self._sig_queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+
+    async def _send_cmd(self, cmd: str, key: str, arg: str) -> str:
+        if self._writer is None:
+            raise RuntimeError("not connected; call connect() first")
+        async with self._cmd_lock:
+            loop = asyncio.get_running_loop()
+            self._resp_future = loop.create_future()
+            self._writer.write(encode_lines(cmd, key, arg))
+            await self._writer.drain()
+            try:
+                return await self._resp_future
+            finally:
+                self._resp_future = None
+
+    async def listen(self, pattern: str, *, group: str = "") -> None:
+        """Subscribe to signals matching *pattern*.
+
+        Supports NATS-style wildcards: ``*`` matches one token,
+        ``>`` matches one or more trailing tokens.
+        *group* enables queue-group load balancing (round-robin within group).
+        """
+        resp = await self._send_cmd("listen", pattern, group)
+        if resp != "ok":
+            raise RuntimeError(f"listen failed: {resp!r}")
+
+    async def unlisten(self, pattern: str, *, group: str = "") -> None:
+        """Remove a signal subscription. Pattern and group must match the
+        original :meth:`listen` call."""
+        resp = await self._send_cmd("unlisten", pattern, group)
+        if resp != "ok":
+            raise RuntimeError(f"unlisten failed: {resp!r}")
+
+    async def emit(self, channel: str, payload: str) -> int:
+        """Publish a signal on a literal channel (no wildcards).
+
+        Returns the number of listeners the signal was delivered to.
+        """
+        if "*" in channel or ">" in channel:
+            raise ValueError("channel must not contain wildcards (* or >)")
+        resp = await self._send_cmd("signal", channel, payload)
+        if not resp.startswith("ok "):
+            raise RuntimeError(f"signal failed: {resp!r}")
+        parts = resp.split()
+        if len(parts) < 2:
+            raise RuntimeError(f"bad signal response: {resp!r}")
+        try:
+            return int(parts[1])
+        except ValueError as e:
+            raise RuntimeError(f"bad signal response: {resp!r}") from e
+
+    @property
+    def signals(self) -> asyncio.Queue[Signal | None]:
+        """Queue of received signals. ``None`` sentinel indicates connection closed."""
+        return self._sig_queue
+
+    def __aiter__(self):
+        return self._iter_signals()
+
+    async def _iter_signals(self):
+        while True:
+            item = await self._sig_queue.get()
+            if item is None:
+                return
+            yield item
+
+    async def __aenter__(self):
+        await self.connect()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Close the connection and stop the background reader."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._read_task is not None:
+            self._read_task.cancel()
+            with contextlib.suppress(BaseException):
+                await self._read_task
+            self._read_task = None
+        if self._writer is not None:
+            try:
+                self._writer.close()
+            except Exception:
+                pass
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self._writer.wait_closed(), timeout=5)
+        self._reader = None
+        self._writer = None

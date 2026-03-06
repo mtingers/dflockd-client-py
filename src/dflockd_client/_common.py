@@ -1,7 +1,7 @@
 """Shared protocol helpers used by both async and sync clients."""
 
 import logging
-from typing import Any, TypedDict
+from typing import Any, NamedTuple, TypedDict
 
 log = logging.getLogger("dflockd-client")
 
@@ -35,3 +35,10 @@ class StatsResult(TypedDict):
     semaphores: list[dict[str, Any]]
     idle_locks: list[str]
     idle_semaphores: list[str]
+
+
+class Signal(NamedTuple):
+    """A signal received from a pub/sub channel."""
+
+    channel: str
+    payload: str
