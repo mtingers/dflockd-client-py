@@ -666,9 +666,7 @@ class SignalConn:
 
     _reader: asyncio.StreamReader | None = field(default=None, init=False, repr=False)
     _writer: asyncio.StreamWriter | None = field(default=None, init=False, repr=False)
-    _read_task: asyncio.Task[None] | None = field(
-        default=None, init=False, repr=False
-    )
+    _read_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
     _sig_queue: asyncio.Queue[Signal | None] = field(
         default_factory=lambda: asyncio.Queue(maxsize=64), init=False, repr=False
     )

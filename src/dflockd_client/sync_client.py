@@ -685,9 +685,7 @@ class SignalConn:
 
     _sock: socket.socket | None = field(default=None, init=False, repr=False)
     _rfile: io.TextIOWrapper | None = field(default=None, init=False, repr=False)
-    _read_thread: threading.Thread | None = field(
-        default=None, init=False, repr=False
-    )
+    _read_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _sig_queue: queue.Queue[Signal | None] = field(
         default_factory=lambda: queue.Queue(maxsize=64), init=False, repr=False
     )
