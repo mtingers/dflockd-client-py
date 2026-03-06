@@ -172,7 +172,7 @@ def release(
 
 
 def stats(sock: socket.socket, rfile: io.TextIOWrapper) -> StatsResult:
-    sock.sendall(encode_lines("stats", "_", ""))
+    sock.sendall(encode_lines("stats", "_", "_"))
 
     resp = _readline(rfile)
     if not resp.startswith("ok "):

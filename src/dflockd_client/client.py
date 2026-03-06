@@ -180,7 +180,7 @@ async def stats(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
 ) -> StatsResult:
-    writer.write(encode_lines("stats", "_", ""))
+    writer.write(encode_lines("stats", "_", "_"))
     await writer.drain()
 
     resp = await _readline(reader)

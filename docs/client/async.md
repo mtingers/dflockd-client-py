@@ -159,7 +159,7 @@ from dflockd_client.client import acquire, release, renew, enqueue, wait
 
 reader, writer = await asyncio.open_connection("127.0.0.1", 6388)
 
-token, lease = await acquire(reader, writer, "my-key", timeout_s=10)
+token, lease = await acquire(reader, writer, "my-key", 10)
 remaining = await renew(reader, writer, "my-key", token)
 await release(reader, writer, "my-key", token)
 
@@ -246,7 +246,7 @@ from dflockd_client.client import sem_acquire, sem_release, sem_renew, sem_enque
 
 reader, writer = await asyncio.open_connection("127.0.0.1", 6388)
 
-token, lease = await sem_acquire(reader, writer, "my-key", timeout_s=10, limit=3)
+token, lease = await sem_acquire(reader, writer, "my-key", 10, 3)
 remaining = await sem_renew(reader, writer, "my-key", token)
 await sem_release(reader, writer, "my-key", token)
 
