@@ -915,10 +915,15 @@ class TestAsyncProtocolErrors:
     # --- stats ---
 
     async def test_stats_ok(self):
-        payload = json.dumps({
-            "connections": 1, "locks": [], "semaphores": [],
-            "idle_locks": [], "idle_semaphores": [],
-        })
+        payload = json.dumps(
+            {
+                "connections": 1,
+                "locks": [],
+                "semaphores": [],
+                "idle_locks": [],
+                "idle_semaphores": [],
+            }
+        )
         r, w = _async_rw(f"ok {payload}\n".encode())
         result = await aclient.stats(r, w)
         assert result["connections"] == 1
@@ -1082,10 +1087,15 @@ class TestSyncProtocolErrors:
     # --- stats ---
 
     def test_stats_ok(self):
-        payload = json.dumps({
-            "connections": 1, "locks": [], "semaphores": [],
-            "idle_locks": [], "idle_semaphores": [],
-        })
+        payload = json.dumps(
+            {
+                "connections": 1,
+                "locks": [],
+                "semaphores": [],
+                "idle_locks": [],
+                "idle_semaphores": [],
+            }
+        )
         s, r = _sync_rw(f"ok {payload}\n")
         result = sclient.stats(s, r)  # type: ignore[arg-type]
         assert result["connections"] == 1
