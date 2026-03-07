@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.8.4] - 2026-03-07
+
+### Fixed
+
+- `SignalConn.connect()` did not reset `_closed` flag or create fresh queues, preventing reconnection after `close()`/`aclose()`
+- `None` sentinel silently dropped when signal queue was full, causing `for sig in sc:` / `async for sig in sc:` to hang forever
+- Sync `_read_loop` blocked indefinitely on full `_resp_queue` (changed `put()` to `put_nowait()`)
+
+[v1.8.4]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.8.4
+
 ## [v1.8.3] - 2026-03-06
 
 ### Docs
