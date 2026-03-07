@@ -1,23 +1,23 @@
-site_name: dflockd-client
-site_url: https://mtingers.github.io/dflockd-client-py/
-site_description: Python client library for dflockd
-repo_url: https://github.com/mtingers/dflockd-client-py
-repo_name: mtingers/dflockd-client-py
+site_name: dflockd
+site_url: https://mtingers.github.io/dflockd/
+site_description: A lightweight distributed lock server using a simple line-based TCP protocol with FIFO ordering, automatic lease expiry, and background renewal.
+repo_url: https://github.com/mtingers/dflockd
+repo_name: mtingers/dflockd
 
 theme:
   name: material
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: deep purple
-      accent: amber
+      primary: slate
+      accent: indigo
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: deep purple
-      accent: amber
+      primary: slate
+      accent: indigo
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
@@ -57,12 +57,14 @@ nav:
     - Installation: getting-started/installation.md
     - Quick Start: getting-started/quickstart.md
     - Examples: getting-started/examples.md
-  - Guide:
-    - Architecture: guide/architecture.md
-    - Sharding: guide/sharding.md
+  - Server:
+    - Configuration: server.md
   - Client:
-    - Async Client: client/async.md
-    - Sync Client: client/sync.md
-  - API Reference:
-    - Python API: api/python.md
+    - Go Client: client.md
+  - Architecture:
+    - Overview: architecture/overview.md
+    - Wire Protocol: architecture/protocol.md
   - Changelog: changelog.md
+
+extra_css:
+  - stylesheets/extra.css
