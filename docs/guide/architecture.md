@@ -53,7 +53,7 @@ Once a lock or semaphore is acquired, the client starts a background renewal loo
 - **Async client** — an `asyncio.Task` that sends renew requests at `lease * renew_ratio` intervals.
 - **Sync client** — a daemon `threading.Thread` that does the same.
 
-If renewal fails (server unreachable, lease already expired), the client logs an error and sets `token = None`.
+If renewal fails (server unreachable, lease already expired), the client logs an error and the renewal loop exits. The lease will eventually expire server-side.
 
 ### Signals (pub/sub)
 

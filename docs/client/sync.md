@@ -42,6 +42,8 @@ if lock.acquire():
 
 ## Parameters
 
+`key` is the only positional parameter. All others are keyword-only.
+
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `key` | `str` | *(required)* | Lock name |
@@ -93,7 +95,7 @@ The same `ssl_context` parameter is available on `DistributedSemaphore`.
 
 ## Background renewal
 
-Once acquired, a daemon thread sends renew requests at `lease * renew_ratio` intervals. If renewal fails, the client logs an error and sets `token = None`.
+Once acquired, a daemon thread sends renew requests at `lease * renew_ratio` intervals. If renewal fails, the client logs an error and the renewal loop exits. The lease will eventually expire server-side.
 
 The renewal thread includes staleness checks — if the connection is replaced (e.g. after a reconnect), the old renewal thread detects the identity mismatch and exits cleanly. If the server returns a zero-length lease, the renewal loop falls back to a 30-second interval instead of spinning aggressively.
 
@@ -221,6 +223,8 @@ if sem.wait(timeout_s=10):
 ```
 
 ### Semaphore parameters
+
+`key` is the only positional parameter. All others (including `limit`) are keyword-only.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|

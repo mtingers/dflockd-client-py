@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.8.6] - 2026-03-07
+
+### Docs
+
+- Added `KW_ONLY` marker to all dataclass definitions in API reference to accurately show keyword-only parameters
+- Added missing `Signal`, `AsyncSignalConn`, `SyncSignalConn` to top-level import example in API reference
+- Added keyword-only parameter notes to lock and semaphore parameter tables in client guides
+- Fixed background renewal description: incorrectly stated "sets `token = None`" on failure; actually the renewal loop exits and the lease expires server-side
+
+[v1.8.6]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.8.6
+
 ## [v1.8.5] - 2026-03-07
 
 ### Fixed

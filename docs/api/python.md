@@ -8,8 +8,11 @@ The package provides convenience imports at the top level so you don't need to r
 from dflockd_client import (
     AsyncDistributedLock,
     AsyncDistributedSemaphore,
+    AsyncSignalConn,
     SyncDistributedLock,
     SyncDistributedSemaphore,
+    SyncSignalConn,
+    Signal,
     StatsResult,
     __version__,
     DEFAULT_SERVERS,
@@ -43,6 +46,7 @@ from dflockd_client import (
 @dataclass
 class DistributedLock:
     key: str
+    _: KW_ONLY
     acquire_timeout_s: int = 10
     lease_ttl_s: int | None = None
     servers: list[tuple[str, int]] = [("127.0.0.1", 6388)]
@@ -52,6 +56,8 @@ class DistributedLock:
     auth_token: str | None = None
     connect_timeout_s: float = 10
 ```
+
+`key` is the only positional parameter. All others are keyword-only.
 
 **Methods:**
 
@@ -158,6 +164,7 @@ Query server state. Returns a `StatsResult` TypedDict with `connections` (int), 
 @dataclass
 class DistributedSemaphore:
     key: str
+    _: KW_ONLY
     limit: int
     acquire_timeout_s: int = 10
     lease_ttl_s: int | None = None
@@ -168,6 +175,8 @@ class DistributedSemaphore:
     auth_token: str | None = None
     connect_timeout_s: float = 10
 ```
+
+`key` is the only positional parameter. All others (including `limit`) are keyword-only.
 
 **Methods:**
 
@@ -316,6 +325,7 @@ Emit a signal on a literal channel (no wildcards). Returns the number of listene
 @dataclass
 class DistributedLock:
     key: str
+    _: KW_ONLY
     acquire_timeout_s: int = 10
     lease_ttl_s: int | None = None
     servers: list[tuple[str, int]] = [("127.0.0.1", 6388)]
@@ -325,6 +335,8 @@ class DistributedLock:
     auth_token: str | None = None
     connect_timeout_s: float = 10
 ```
+
+`key` is the only positional parameter. All others are keyword-only.
 
 **Methods:**
 
@@ -423,6 +435,7 @@ Query server state. Returns a `StatsResult` TypedDict with `connections` (int), 
 @dataclass
 class DistributedSemaphore:
     key: str
+    _: KW_ONLY
     limit: int
     acquire_timeout_s: int = 10
     lease_ttl_s: int | None = None
@@ -433,6 +446,8 @@ class DistributedSemaphore:
     auth_token: str | None = None
     connect_timeout_s: float = 10
 ```
+
+`key` is the only positional parameter. All others (including `limit`) are keyword-only.
 
 **Methods:**
 

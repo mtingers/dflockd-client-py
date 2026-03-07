@@ -49,6 +49,8 @@ if acquired:
 
 ## Parameters
 
+`key` is the only positional parameter. All others are keyword-only.
+
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `key` | `str` | *(required)* | Lock name |
@@ -102,7 +104,7 @@ After acquiring a lock, these attributes are available:
 
 ## Background renewal
 
-Once a lock is acquired, the client starts an `asyncio.Task` that sends renew requests at `lease * renew_ratio` intervals. If renewal fails (server unreachable, lease already expired), the client logs an error and sets `token = None`.
+Once a lock is acquired, the client starts an `asyncio.Task` that sends renew requests at `lease * renew_ratio` intervals. If renewal fails (server unreachable, lease already expired), the client logs an error and the renewal loop exits. The lease will eventually expire server-side.
 
 The renewal task includes staleness checks — if the connection is replaced (e.g. after a reconnect), the old renewal task detects the identity mismatch and exits cleanly. If the server returns a zero-length lease, the renewal loop falls back to a 30-second interval instead of spinning aggressively.
 
@@ -225,6 +227,8 @@ if await sem.wait(timeout_s=10):
 ```
 
 ### Semaphore parameters
+
+`key` is the only positional parameter. All others (including `limit`) are keyword-only.
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
