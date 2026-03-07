@@ -106,6 +106,143 @@ class TestSignalExports:
 
 
 # ===========================================================================
+# Bug fix: connect() must reset _closed and create fresh queues
+# ===========================================================================
+
+
+class TestAsyncSignalConnClosedReset:
+    async def test_connect_resets_closed_flag(self):
+        sc = aclient.SignalConn(server=("127.0.0.1", 1), connect_timeout_s=0.1)
+        sc._closed = True
+        with pytest.raises((ConnectionRefusedError, OSError, asyncio.TimeoutError)):
+            await sc.connect()
+        # _closed was reset before the connection attempt
+        assert sc._closed is False
+
+    async def test_connect_creates_fresh_queue(self):
+        sc = aclient.SignalConn(server=("127.0.0.1", 1), connect_timeout_s=0.1)
+        sc._sig_queue.put_nowait(Signal("stale", "x"))
+        assert not sc._sig_queue.empty()
+        with pytest.raises((ConnectionRefusedError, OSError, asyncio.TimeoutError)):
+            await sc.connect()
+        assert sc._sig_queue.empty()
+
+
+class TestSyncSignalConnClosedReset:
+    def test_connect_resets_closed_flag(self):
+        sc = sclient.SignalConn(server=("127.0.0.1", 1), connect_timeout_s=0.1)
+        sc._closed = True
+        with pytest.raises((ConnectionRefusedError, OSError)):
+            sc.connect()
+        assert sc._closed is False
+
+    def test_connect_creates_fresh_queues(self):
+        sc = sclient.SignalConn(server=("127.0.0.1", 1), connect_timeout_s=0.1)
+        sc._sig_queue.put_nowait(Signal("stale", "x"))
+        sc._resp_queue.put_nowait("stale")
+        with pytest.raises((ConnectionRefusedError, OSError)):
+            sc.connect()
+        assert sc._sig_queue.empty()
+        assert sc._resp_queue.empty()
+
+
+# ===========================================================================
+# Bug fix: None sentinel must be delivered even when queue is full
+# ===========================================================================
+
+
+class TestAsyncSentinelDeliveryWhenFull:
+    async def test_sentinel_delivered_when_queue_full(self):
+        sc = aclient.SignalConn()
+        for i in range(64):
+            sc._sig_queue.put_nowait(Signal(f"ch.{i}", str(i)))
+        assert sc._sig_queue.full()
+
+        # Simulate read_loop with an EOF reader
+        reader = asyncio.StreamReader()
+        reader.feed_eof()
+        sc._reader = reader
+
+        await sc._read_loop()
+
+        items = []
+        while not sc._sig_queue.empty():
+            items.append(sc._sig_queue.get_nowait())
+        assert items[-1] is None
+
+    async def test_sentinel_works_with_empty_queue(self):
+        sc = aclient.SignalConn()
+        reader = asyncio.StreamReader()
+        reader.feed_eof()
+        sc._reader = reader
+
+        await sc._read_loop()
+
+        item = sc._sig_queue.get_nowait()
+        assert item is None
+
+
+class TestSyncSentinelDeliveryWhenFull:
+    def test_sentinel_delivered_when_queue_full(self):
+        sc = sclient.SignalConn()
+        for i in range(64):
+            sc._sig_queue.put_nowait(Signal(f"ch.{i}", str(i)))
+        assert sc._sig_queue.full()
+
+        sc._rfile = io.StringIO("")
+        sc._read_loop()
+
+        items = []
+        while not sc._sig_queue.empty():
+            items.append(sc._sig_queue.get_nowait())
+        assert items[-1] is None
+
+    def test_sentinel_works_with_empty_queue(self):
+        sc = sclient.SignalConn()
+        sc._rfile = io.StringIO("")
+
+        sc._read_loop()
+
+        item = sc._sig_queue.get_nowait()
+        assert item is None
+
+
+# ===========================================================================
+# Bug fix: sync _read_loop must not block on full _resp_queue
+# ===========================================================================
+
+
+class TestSyncRespQueueNonBlocking:
+    def test_read_loop_does_not_block_on_full_resp_queue(self):
+        sc = sclient.SignalConn()
+        sc._resp_queue.put_nowait("stale")  # Fill maxsize=1 queue
+
+        # rfile returns a non-signal line then EOF
+        sc._rfile = io.StringIO("ok some_response\n")
+
+        done = threading.Event()
+
+        def run():
+            sc._read_loop()
+            done.set()
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        assert done.wait(timeout=2), "_read_loop blocked on full _resp_queue"
+
+    def test_read_loop_routes_signals_and_responses(self):
+        sc = sclient.SignalConn()
+        sc._rfile = io.StringIO("sig events.login alice\nok 1\n")
+
+        sc._read_loop()
+
+        sig = sc._sig_queue.get_nowait()
+        assert sig == Signal("events.login", "alice")
+        resp = sc._resp_queue.get_nowait()
+        assert resp == "ok 1"
+
+
+# ===========================================================================
 # Async integration tests (require running dflockd server)
 # ===========================================================================
 

@@ -699,6 +699,9 @@ class SignalConn:
 
     def connect(self) -> None:
         """Connect to the server and start the background reader thread."""
+        self._closed = False
+        self._sig_queue = queue.Queue(maxsize=64)
+        self._resp_queue = queue.Queue(maxsize=1)
         host, port = self.server
         sock = socket.create_connection((host, port), timeout=self.connect_timeout_s)
         try:
@@ -742,14 +745,26 @@ class SignalConn:
                     except queue.Full:
                         pass
                 else:
-                    self._resp_queue.put(line)
+                    try:
+                        self._resp_queue.put_nowait(line)
+                    except queue.Full:
+                        pass
         except (ConnectionError, RuntimeError, OSError, ValueError):
             pass
         finally:
+            # Ensure the sentinel is delivered even if the queue is full
+            # so that ``for sig in sc:`` terminates cleanly.
             try:
                 self._sig_queue.put_nowait(None)
             except queue.Full:
-                pass
+                try:
+                    self._sig_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self._sig_queue.put_nowait(None)
+                except queue.Full:
+                    pass
 
     def _send_cmd(self, cmd: str, key: str, arg: str) -> str:
         if self._sock is None:

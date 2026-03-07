@@ -1,5 +1,4 @@
-"""Unit tests for resource cleanup: __del__ FD release, wait_closed timeout,
-and renew-loop local reference cleanup.
+"""Unit tests for resource cleanup, protocol error paths, and bug fix regression.
 
 These tests use mocking/fakes — no dflockd server required.
 """
@@ -7,6 +6,7 @@ These tests use mocking/fakes — no dflockd server required.
 import asyncio
 import gc
 import io
+import json
 import socket
 import threading
 import warnings
@@ -16,6 +16,7 @@ import pytest
 
 import dflockd_client.client as aclient
 import dflockd_client.sync_client as sclient
+from dflockd_client._common import _MAX_LINE_LEN
 
 
 # ===========================================================================
@@ -802,3 +803,341 @@ class TestDefaultServers:
         lock2 = sclient.DistributedLock(key="k2")
         lock1.servers.append(("extra", 1234))
         assert ("extra", 1234) not in lock2.servers
+
+
+# ===========================================================================
+# Async protocol function error paths (mocked reader/writer, no server)
+# ===========================================================================
+
+
+def _async_rw(response: bytes):
+    """Create a mock async reader (pre-fed) and writer."""
+    reader = asyncio.StreamReader()
+    reader.feed_data(response)
+    writer = MagicMock(spec=asyncio.StreamWriter)
+    writer.write = MagicMock()
+    writer.drain = AsyncMock()
+    return reader, writer
+
+
+class TestAsyncProtocolErrors:
+    async def test_readline_value_error_becomes_runtime_error(self):
+        reader = asyncio.StreamReader(limit=10)
+        reader.feed_data(b"x" * 30 + b"\n")
+        with pytest.raises(RuntimeError, match="line length limit"):
+            await aclient._readline(reader)
+
+    # --- acquire ---
+
+    async def test_acquire_ok(self):
+        r, w = _async_rw(b"ok tok123 30\n")
+        token, lease = await aclient.acquire(r, w, "k", 5)
+        assert token == "tok123"
+        assert lease == 30
+
+    async def test_acquire_timeout_response(self):
+        r, w = _async_rw(b"timeout\n")
+        with pytest.raises(TimeoutError, match="timeout acquiring"):
+            await aclient.acquire(r, w, "k", 5)
+
+    async def test_acquire_bad_response(self):
+        r, w = _async_rw(b"error something\n")
+        with pytest.raises(RuntimeError, match="acquire failed"):
+            await aclient.acquire(r, w, "k", 5)
+
+    async def test_acquire_short_ok(self):
+        r, w = _async_rw(b"ok \n")
+        with pytest.raises(RuntimeError, match="bad ok response"):
+            await aclient.acquire(r, w, "k", 5)
+
+    # --- renew ---
+
+    async def test_renew_ok_with_remaining(self):
+        r, w = _async_rw(b"ok 42\n")
+        result = await aclient.renew(r, w, "k", "tok")
+        assert result == 42
+
+    async def test_renew_bare_ok_returns_negative(self):
+        r, w = _async_rw(b"ok\n")
+        result = await aclient.renew(r, w, "k", "tok")
+        assert result == -1
+
+    async def test_renew_bad_response(self):
+        r, w = _async_rw(b"error bad\n")
+        with pytest.raises(RuntimeError, match="renew failed"):
+            await aclient.renew(r, w, "k", "tok")
+
+    # --- enqueue ---
+
+    async def test_enqueue_acquired(self):
+        r, w = _async_rw(b"acquired tok123 30\n")
+        status, token, lease = await aclient.enqueue(r, w, "k")
+        assert (status, token, lease) == ("acquired", "tok123", 30)
+
+    async def test_enqueue_queued(self):
+        r, w = _async_rw(b"queued\n")
+        status, token, lease = await aclient.enqueue(r, w, "k")
+        assert (status, token, lease) == ("queued", None, None)
+
+    async def test_enqueue_bad_response(self):
+        r, w = _async_rw(b"error bad\n")
+        with pytest.raises(RuntimeError, match="enqueue failed"):
+            await aclient.enqueue(r, w, "k")
+
+    # --- wait ---
+
+    async def test_wait_ok(self):
+        r, w = _async_rw(b"ok tok456 60\n")
+        token, lease = await aclient.wait(r, w, "k", 5)
+        assert (token, lease) == ("tok456", 60)
+
+    async def test_wait_timeout_response(self):
+        r, w = _async_rw(b"timeout\n")
+        with pytest.raises(TimeoutError, match="timeout waiting"):
+            await aclient.wait(r, w, "k", 5)
+
+    async def test_wait_bad_response(self):
+        r, w = _async_rw(b"error bad\n")
+        with pytest.raises(RuntimeError, match="wait failed"):
+            await aclient.wait(r, w, "k", 5)
+
+    # --- release ---
+
+    async def test_release_ok(self):
+        r, w = _async_rw(b"ok\n")
+        await aclient.release(r, w, "k", "tok")  # should not raise
+
+    async def test_release_bad_response(self):
+        r, w = _async_rw(b"error bad\n")
+        with pytest.raises(RuntimeError, match="release failed"):
+            await aclient.release(r, w, "k", "tok")
+
+    # --- stats ---
+
+    async def test_stats_ok(self):
+        payload = json.dumps({
+            "connections": 1, "locks": [], "semaphores": [],
+            "idle_locks": [], "idle_semaphores": [],
+        })
+        r, w = _async_rw(f"ok {payload}\n".encode())
+        result = await aclient.stats(r, w)
+        assert result["connections"] == 1
+
+    async def test_stats_bad_response(self):
+        r, w = _async_rw(b"error\n")
+        with pytest.raises(RuntimeError, match="stats failed"):
+            await aclient.stats(r, w)
+
+    async def test_stats_bad_json(self):
+        r, w = _async_rw(b"ok {not valid json\n")
+        with pytest.raises(RuntimeError, match="bad stats response"):
+            await aclient.stats(r, w)
+
+    # --- semaphore wrappers ---
+
+    async def test_sem_acquire_bad_limit(self):
+        with pytest.raises(ValueError, match="limit"):
+            await aclient.sem_acquire(None, None, "k", 5, 0)  # type: ignore[arg-type]
+
+    async def test_sem_enqueue_bad_limit(self):
+        with pytest.raises(ValueError, match="limit"):
+            await aclient.sem_enqueue(None, None, "k", 0)  # type: ignore[arg-type]
+
+    async def test_sem_acquire_timeout_labels_semaphore(self):
+        r, w = _async_rw(b"timeout\n")
+        with pytest.raises(TimeoutError, match="semaphore"):
+            await aclient.sem_acquire(r, w, "k", 5, 2)
+
+    async def test_sem_renew_bad_response(self):
+        r, w = _async_rw(b"error bad\n")
+        with pytest.raises(RuntimeError, match="sem_renew failed"):
+            await aclient.sem_renew(r, w, "k", "tok")
+
+    async def test_sem_release_bad_response(self):
+        r, w = _async_rw(b"error bad\n")
+        with pytest.raises(RuntimeError, match="sem_release failed"):
+            await aclient.sem_release(r, w, "k", "tok")
+
+    # --- sig_emit ---
+
+    async def test_sig_emit_ok(self):
+        r, w = _async_rw(b"ok 3\n")
+        n = await aclient.sig_emit(r, w, "ch.test", "hello")
+        assert n == 3
+
+    async def test_sig_emit_bad_response(self):
+        r, w = _async_rw(b"error\n")
+        with pytest.raises(RuntimeError, match="signal failed"):
+            await aclient.sig_emit(r, w, "ch.test", "hello")
+
+    async def test_sig_emit_bad_count(self):
+        r, w = _async_rw(b"ok notanumber\n")
+        with pytest.raises(RuntimeError, match="bad signal response"):
+            await aclient.sig_emit(r, w, "ch.test", "hello")
+
+
+# ===========================================================================
+# Sync protocol function error paths (mocked socket/rfile, no server)
+# ===========================================================================
+
+
+def _sync_rw(response: str):
+    """Create a mock sync socket and StringIO rfile."""
+    sock = MagicMock(spec=socket.socket)
+    rfile = io.StringIO(response)
+    return sock, rfile
+
+
+class TestSyncProtocolErrors:
+    def test_readline_too_long(self):
+        huge = "x" * (_MAX_LINE_LEN + 10) + "\n"
+        buf = io.StringIO(huge)
+        with pytest.raises(RuntimeError, match="too large"):
+            sclient._readline(buf)  # type: ignore[arg-type]
+
+    # --- acquire ---
+
+    def test_acquire_ok(self):
+        s, r = _sync_rw("ok tok123 30\n")
+        token, lease = sclient.acquire(s, r, "k", 5)  # type: ignore[arg-type]
+        assert (token, lease) == ("tok123", 30)
+
+    def test_acquire_timeout_response(self):
+        s, r = _sync_rw("timeout\n")
+        with pytest.raises(TimeoutError, match="timeout acquiring"):
+            sclient.acquire(s, r, "k", 5)  # type: ignore[arg-type]
+
+    def test_acquire_bad_response(self):
+        s, r = _sync_rw("error something\n")
+        with pytest.raises(RuntimeError, match="acquire failed"):
+            sclient.acquire(s, r, "k", 5)  # type: ignore[arg-type]
+
+    def test_acquire_short_ok(self):
+        s, r = _sync_rw("ok \n")
+        with pytest.raises(RuntimeError, match="bad ok response"):
+            sclient.acquire(s, r, "k", 5)  # type: ignore[arg-type]
+
+    # --- renew ---
+
+    def test_renew_ok_with_remaining(self):
+        s, r = _sync_rw("ok 42\n")
+        result = sclient.renew(s, r, "k", "tok")  # type: ignore[arg-type]
+        assert result == 42
+
+    def test_renew_bare_ok(self):
+        s, r = _sync_rw("ok\n")
+        result = sclient.renew(s, r, "k", "tok")  # type: ignore[arg-type]
+        assert result == -1
+
+    def test_renew_bad_response(self):
+        s, r = _sync_rw("error bad\n")
+        with pytest.raises(RuntimeError, match="renew failed"):
+            sclient.renew(s, r, "k", "tok")  # type: ignore[arg-type]
+
+    # --- enqueue ---
+
+    def test_enqueue_acquired(self):
+        s, r = _sync_rw("acquired tok123 30\n")
+        status, token, lease = sclient.enqueue(s, r, "k")  # type: ignore[arg-type]
+        assert (status, token, lease) == ("acquired", "tok123", 30)
+
+    def test_enqueue_queued(self):
+        s, r = _sync_rw("queued\n")
+        status, token, lease = sclient.enqueue(s, r, "k")  # type: ignore[arg-type]
+        assert (status, token, lease) == ("queued", None, None)
+
+    def test_enqueue_bad_response(self):
+        s, r = _sync_rw("error bad\n")
+        with pytest.raises(RuntimeError, match="enqueue failed"):
+            sclient.enqueue(s, r, "k")  # type: ignore[arg-type]
+
+    # --- wait ---
+
+    def test_wait_ok(self):
+        s, r = _sync_rw("ok tok456 60\n")
+        token, lease = sclient.wait(s, r, "k", 5)  # type: ignore[arg-type]
+        assert (token, lease) == ("tok456", 60)
+
+    def test_wait_timeout_response(self):
+        s, r = _sync_rw("timeout\n")
+        with pytest.raises(TimeoutError, match="timeout waiting"):
+            sclient.wait(s, r, "k", 5)  # type: ignore[arg-type]
+
+    def test_wait_bad_response(self):
+        s, r = _sync_rw("error bad\n")
+        with pytest.raises(RuntimeError, match="wait failed"):
+            sclient.wait(s, r, "k", 5)  # type: ignore[arg-type]
+
+    # --- release ---
+
+    def test_release_ok(self):
+        s, r = _sync_rw("ok\n")
+        sclient.release(s, r, "k", "tok")  # type: ignore[arg-type]
+
+    def test_release_bad_response(self):
+        s, r = _sync_rw("error bad\n")
+        with pytest.raises(RuntimeError, match="release failed"):
+            sclient.release(s, r, "k", "tok")  # type: ignore[arg-type]
+
+    # --- stats ---
+
+    def test_stats_ok(self):
+        payload = json.dumps({
+            "connections": 1, "locks": [], "semaphores": [],
+            "idle_locks": [], "idle_semaphores": [],
+        })
+        s, r = _sync_rw(f"ok {payload}\n")
+        result = sclient.stats(s, r)  # type: ignore[arg-type]
+        assert result["connections"] == 1
+
+    def test_stats_bad_response(self):
+        s, r = _sync_rw("error\n")
+        with pytest.raises(RuntimeError, match="stats failed"):
+            sclient.stats(s, r)  # type: ignore[arg-type]
+
+    def test_stats_bad_json(self):
+        s, r = _sync_rw("ok {not valid json\n")
+        with pytest.raises(RuntimeError, match="bad stats response"):
+            sclient.stats(s, r)  # type: ignore[arg-type]
+
+    # --- semaphore wrappers ---
+
+    def test_sem_acquire_bad_limit(self):
+        with pytest.raises(ValueError, match="limit"):
+            sclient.sem_acquire(None, None, "k", 5, 0)  # type: ignore[arg-type]
+
+    def test_sem_enqueue_bad_limit(self):
+        with pytest.raises(ValueError, match="limit"):
+            sclient.sem_enqueue(None, None, "k", 0)  # type: ignore[arg-type]
+
+    def test_sem_acquire_timeout_labels_semaphore(self):
+        s, r = _sync_rw("timeout\n")
+        with pytest.raises(TimeoutError, match="semaphore"):
+            sclient.sem_acquire(s, r, "k", 5, 2)  # type: ignore[arg-type]
+
+    def test_sem_renew_bad_response(self):
+        s, r = _sync_rw("error bad\n")
+        with pytest.raises(RuntimeError, match="sem_renew failed"):
+            sclient.sem_renew(s, r, "k", "tok")  # type: ignore[arg-type]
+
+    def test_sem_release_bad_response(self):
+        s, r = _sync_rw("error bad\n")
+        with pytest.raises(RuntimeError, match="sem_release failed"):
+            sclient.sem_release(s, r, "k", "tok")  # type: ignore[arg-type]
+
+    # --- sig_emit ---
+
+    def test_sig_emit_ok(self):
+        s, r = _sync_rw("ok 3\n")
+        n = sclient.sig_emit(s, r, "ch.test", "hello")  # type: ignore[arg-type]
+        assert n == 3
+
+    def test_sig_emit_bad_response(self):
+        s, r = _sync_rw("error\n")
+        with pytest.raises(RuntimeError, match="signal failed"):
+            sclient.sig_emit(s, r, "ch.test", "hello")  # type: ignore[arg-type]
+
+    def test_sig_emit_bad_count(self):
+        s, r = _sync_rw("ok notanumber\n")
+        with pytest.raises(RuntimeError, match="bad signal response"):
+            sclient.sig_emit(s, r, "ch.test", "hello")  # type: ignore[arg-type]

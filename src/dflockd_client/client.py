@@ -680,6 +680,8 @@ class SignalConn:
 
     async def connect(self) -> None:
         """Connect to the server and start the background reader."""
+        self._closed = False
+        self._sig_queue = asyncio.Queue(maxsize=64)
         host, port = self.server
         self._reader, self._writer = await asyncio.wait_for(
             asyncio.open_connection(
@@ -727,10 +729,17 @@ class SignalConn:
             fut = self._resp_future
             if fut is not None and not fut.done():
                 fut.set_exception(ConnectionError("connection closed"))
+            # Ensure the sentinel is delivered even if the queue is full
+            # so that ``async for sig in sc:`` terminates cleanly.
             try:
                 self._sig_queue.put_nowait(None)
             except asyncio.QueueFull:
-                pass
+                try:
+                    self._sig_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                with contextlib.suppress(asyncio.QueueFull):
+                    self._sig_queue.put_nowait(None)
 
     async def _send_cmd(self, cmd: str, key: str, arg: str) -> str:
         if self._writer is None:
