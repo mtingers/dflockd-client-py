@@ -1,8 +1,8 @@
-site_name: dflockd
-site_url: https://mtingers.github.io/dflockd/
-site_description: A lightweight distributed lock server using a simple line-based TCP protocol with FIFO ordering, automatic lease expiry, and background renewal.
-repo_url: https://github.com/mtingers/dflockd
-repo_name: mtingers/dflockd
+site_name: dflockd-client
+site_url: https://mtingers.github.io/dflockd-client-py/
+site_description: Python client library for dflockd
+repo_url: https://github.com/mtingers/dflockd-client-py
+repo_name: mtingers/dflockd-client-py
 
 theme:
   name: material
@@ -57,13 +57,14 @@ nav:
     - Installation: getting-started/installation.md
     - Quick Start: getting-started/quickstart.md
     - Examples: getting-started/examples.md
-  - Server:
-    - Configuration: server.md
+  - Guide:
+    - Architecture: guide/architecture.md
+    - Sharding: guide/sharding.md
   - Client:
-    - Go Client: client.md
-  - Architecture:
-    - Overview: architecture/overview.md
-    - Wire Protocol: architecture/protocol.md
+    - Async Client: client/async.md
+    - Sync Client: client/sync.md
+  - API Reference:
+    - Python API: api/python.md
   - Changelog: changelog.md
 
 extra_css:
