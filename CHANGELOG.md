@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.8.7] - 2026-03-07
+
+### Docs
+
+- Rewrote README as a concise entry point (343 → 91 lines): install, one example per feature, link to docs
+- Removed duplicate parameter tables, auth/TLS sections, and stats/sharding examples from README (covered in docs site)
+- Merged separate Authentication and TLS sections into one in async and sync client guides
+- Condensed two-phase acquisition explanations to bullet points in client guides
+- Replaced duplicate semaphore parameter tables with cross-references to lock parameters
+- Removed "Query server stats" and "What happens under the hood" from quickstart (covered in examples and architecture)
+- Tightened docs/index.md feature list
+
+[v1.8.7]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.8.7
+
 ## [v1.8.6] - 2026-03-07
 
 ### Docs

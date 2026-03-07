@@ -56,35 +56,19 @@ if lock.acquire():
 | `auth_token` | `str \| None` | `None` | Auth token for servers started with `--auth-token`. `None` skips auth |
 | `connect_timeout_s` | `float` | `10` | Seconds to wait for the TCP connection |
 
-## Authentication
-
-When the dflockd server is started with `--auth-token`, pass the token to authenticate:
-
-```python
-from dflockd_client.sync_client import DistributedLock
-
-with DistributedLock("my-key", auth_token="mysecret") as lock:
-    print(f"token={lock.token}")
-```
-
-The same `auth_token` parameter is available on `DistributedSemaphore`. A `PermissionError` is raised if the token is invalid.
-
-## TLS
-
-To connect to a TLS-enabled server, pass an `ssl.SSLContext`:
+## Authentication and TLS
 
 ```python
 import ssl
 from dflockd_client.sync_client import DistributedLock
 
-ctx = ssl.create_default_context()  # uses system CA bundle
-# or: ctx = ssl.create_default_context(cafile="/path/to/ca.pem")
+ctx = ssl.create_default_context()
 
-with DistributedLock("my-key", ssl_context=ctx) as lock:
+with DistributedLock("my-key", auth_token="mysecret", ssl_context=ctx) as lock:
     print(f"token={lock.token}")
 ```
 
-The same `ssl_context` parameter is available on `DistributedSemaphore`.
+Both parameters also work on `DistributedSemaphore`. A `PermissionError` is raised if the auth token is invalid.
 
 ## Attributes
 
@@ -117,31 +101,25 @@ finally:
 
 If a client is garbage collected without being properly closed, `__del__` will close the underlying socket and emit a `ResourceWarning` to help catch leaked connections during development.
 
-## Two-phase lock acquisition
+## Two-phase acquisition
 
-The `enqueue()` / `wait()` methods split lock acquisition into two steps. This lets you notify an external system after joining the queue but before blocking:
+Split enqueue and wait to run application logic between joining the queue and blocking:
 
 ```python
 lock = DistributedLock("my-key", acquire_timeout_s=10)
 
-# Step 1: join the queue (returns immediately)
-status = lock.enqueue()  # "acquired" or "queued"
+status = lock.enqueue()              # "acquired" or "queued"
+notify_external_system(status)        # your logic here
 
-# Step 2: notify external system
-notify_external_system(status)
-
-# Step 3: block until granted (no-op if already acquired)
-if lock.wait(timeout_s=10):
+if lock.wait(timeout_s=10):           # blocks until granted
     try:
-        # critical section
-        pass
+        pass  # critical section
     finally:
         lock.release()
 ```
 
-**`enqueue()`** connects to the server and sends the `e` command. Returns `"acquired"` if the lock was free (fast path) or `"queued"` if there are other holders/waiters. On fast-path acquire, the renewal thread starts immediately.
-
-**`wait(timeout_s=None)`** sends the `w` command and blocks until the lock is granted. Returns `True` on success, `False` on timeout. If the lock was already acquired during `enqueue()`, returns `True` immediately without contacting the server. Uses `acquire_timeout_s` if `timeout_s` is not provided.
+- **`enqueue()`** — returns `"acquired"` (fast path, renewal starts immediately) or `"queued"`.
+- **`wait(timeout_s=None)`** — blocks until granted. Returns `False` on timeout. No-op if already acquired during `enqueue()`. Defaults to `acquire_timeout_s`.
 
 ## Low-level functions
 
@@ -224,20 +202,7 @@ if sem.wait(timeout_s=10):
 
 ### Semaphore parameters
 
-`key` is the only positional parameter. All others (including `limit`) are keyword-only.
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `key` | `str` | *(required)* | Semaphore name |
-| `limit` | `int` | *(required)* | Maximum concurrent holders |
-| `acquire_timeout_s` | `int` | `10` | Seconds to wait for acquisition |
-| `lease_ttl_s` | `int \| None` | `None` | Lease duration (seconds). `None` uses server default |
-| `servers` | `list[tuple[str, int]]` | `[("127.0.0.1", 6388)]` | Server addresses |
-| `sharding_strategy` | `ShardingStrategy` | `stable_hash_shard` | Key-to-server mapping function |
-| `renew_ratio` | `float` | `0.5` | Renew at `lease * ratio` seconds |
-| `ssl_context` | `ssl.SSLContext \| None` | `None` | TLS context. `None` uses plain TCP |
-| `auth_token` | `str \| None` | `None` | Auth token for servers started with `--auth-token`. `None` skips auth |
-| `connect_timeout_s` | `float` | `10` | Seconds to wait for the TCP connection |
+Same as [DistributedLock parameters](#parameters) plus a required `limit: int` (maximum concurrent holders). `key` is positional; all others (including `limit`) are keyword-only.
 
 ### Semaphore low-level functions
 

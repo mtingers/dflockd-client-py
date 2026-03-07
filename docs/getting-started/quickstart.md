@@ -105,27 +105,4 @@ with SignalConn(server=("127.0.0.1", 6388)) as sc:
         print(f"{sig.channel}: {sig.payload}")
 ```
 
-## Query server stats
-
-Use the low-level `stats()` function to inspect the server's current state:
-
-```python
-import socket
-from dflockd_client.sync_client import stats
-
-sock = socket.create_connection(("127.0.0.1", 6388))
-rfile = sock.makefile("r", encoding="utf-8")
-result = stats(sock, rfile)
-print(result)
-# {'connections': 1, 'locks': [], 'semaphores': [], 'idle_locks': [], 'idle_semaphores': []}
-rfile.close()
-sock.close()
-```
-
-## What happens under the hood
-
-1. The client opens a TCP connection to the server (selected via sharding if multiple servers are configured).
-2. It sends a lock request with the key and timeout.
-3. The server grants the lock immediately if it's free, or enqueues the client in FIFO order.
-4. Once acquired, the client starts a background task/thread that renews the lease at `lease * renew_ratio` intervals.
-5. On context manager exit (or explicit `release()`), the client sends a release command and closes the connection.
+See [Examples](examples.md) for stats queries, authentication, TLS, sharding, and more advanced patterns. See [Architecture](../guide/architecture.md) for how the client works internally.
