@@ -1,6 +1,6 @@
 site_name: dflockd-client
 site_url: https://mtingers.github.io/dflockd-client-py/
-site_description: Python client library for dflockd
+site_description: A Python client library for dflockd
 repo_url: https://github.com/mtingers/dflockd-client-py
 repo_name: mtingers/dflockd-client-py
 
