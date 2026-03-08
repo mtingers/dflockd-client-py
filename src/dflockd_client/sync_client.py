@@ -767,15 +767,16 @@ class SignalConn:
                     pass
 
     def _send_cmd(self, cmd: str, key: str, arg: str) -> str:
-        if self._sock is None:
-            raise RuntimeError("not connected; call connect() first")
         with self._cmd_lock:
+            sock = self._sock
+            if sock is None:
+                raise RuntimeError("not connected; call connect() first")
             # Drain any stale response.
             try:
                 self._resp_queue.get_nowait()
             except queue.Empty:
                 pass
-            self._sock.sendall(encode_lines(cmd, key, arg))
+            sock.sendall(encode_lines(cmd, key, arg))
             while True:
                 try:
                     return self._resp_queue.get(timeout=1)
@@ -784,7 +785,7 @@ class SignalConn:
                         self._read_thread is not None
                         and not self._read_thread.is_alive()
                     ):
-                        raise ConnectionError("connection closed")
+                        raise ConnectionError("connection closed") from None
 
     def listen(self, pattern: str, *, group: str = "") -> None:
         """Subscribe to signals matching *pattern*.

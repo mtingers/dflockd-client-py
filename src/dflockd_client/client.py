@@ -742,9 +742,9 @@ class SignalConn:
                     self._sig_queue.put_nowait(None)
 
     async def _send_cmd(self, cmd: str, key: str, arg: str) -> str:
-        if self._writer is None:
-            raise RuntimeError("not connected; call connect() first")
         async with self._cmd_lock:
+            if self._writer is None:
+                raise RuntimeError("not connected; call connect() first")
             loop = asyncio.get_running_loop()
             self._resp_future = loop.create_future()
             self._writer.write(encode_lines(cmd, key, arg))

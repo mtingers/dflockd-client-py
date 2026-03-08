@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.8.8] - 2026-03-08
+
+### Fixed
+
+- Race condition in async `SignalConn._send_cmd`: null check on `_writer` was outside `_cmd_lock`, allowing `aclose()` from another task to cause `AttributeError`
+- Race condition in sync `SignalConn._send_cmd`: null check on `_sock` was outside `_cmd_lock`, allowing `close()` from another thread to cause `AttributeError`
+- Misleading exception chain in sync `SignalConn._send_cmd`: `ConnectionError` raised inside `except queue.Empty` produced confusing chained traceback
+
+[v1.8.8]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.8.8
+
 ## [v1.8.7] - 2026-03-07
 
 ### Docs
