@@ -28,7 +28,7 @@ from dflockd_client import (
 | `SyncDistributedLock` | `class` | Alias for `dflockd_client.sync_client.DistributedLock` |
 | `SyncDistributedSemaphore` | `class` | Alias for `dflockd_client.sync_client.DistributedSemaphore` |
 | `StatsResult` | `TypedDict` | Return type of `stats()` with `connections`, `locks`, `semaphores`, `idle_locks`, `idle_semaphores` |
-| `__version__` | `str` | Installed package version (e.g. `"1.7.1"`) |
+| `__version__` | `str` | Installed package version (e.g. `"1.8.9"`) |
 | `DEFAULT_SERVERS` | `tuple[tuple[str, int], ...]` | Default server list: `(("127.0.0.1", 6388),)` |
 | `ShardingStrategy` | `Callable[[str, int], int]` | Type alias for sharding callables |
 | `stable_hash_shard` | `function` | Default CRC-32 sharding strategy |
@@ -269,11 +269,14 @@ Two-phase step 2: block until a semaphore slot is granted. Returns `(token, leas
 ```python
 @dataclass
 class SignalConn:
+    _: KW_ONLY
     server: tuple[str, int] = ("127.0.0.1", 6388)
     ssl_context: ssl.SSLContext | None = None
     auth_token: str | None = None
     connect_timeout_s: float = 10
 ```
+
+All parameters are keyword-only.
 
 **Methods:**
 
@@ -536,11 +539,14 @@ Two-phase step 2: block until a semaphore slot is granted. Returns `(token, leas
 ```python
 @dataclass
 class SignalConn:
+    _: KW_ONLY
     server: tuple[str, int] = ("127.0.0.1", 6388)
     ssl_context: ssl.SSLContext | None = None
     auth_token: str | None = None
     connect_timeout_s: float = 10
 ```
+
+All parameters are keyword-only.
 
 **Methods:**
 
