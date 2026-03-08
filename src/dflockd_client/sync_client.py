@@ -699,6 +699,7 @@ class SignalConn:
 
     def connect(self) -> None:
         """Connect to the server and start the background reader thread."""
+        self.close()
         self._closed = False
         self._sig_queue = queue.Queue(maxsize=64)
         self._resp_queue = queue.Queue(maxsize=1)

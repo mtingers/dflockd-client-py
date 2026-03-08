@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.8.9] - 2026-03-08
+
+### Fixed
+
+- `SignalConn.connect()` (async and sync) did not close the existing connection before reconnecting, leaking the old socket, reader task/thread, and file descriptors when called twice without an intervening `aclose()`/`close()`
+
+[v1.8.9]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.8.9
+
 ## [v1.8.8] - 2026-03-08
 
 ### Fixed

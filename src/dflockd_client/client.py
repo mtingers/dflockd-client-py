@@ -680,6 +680,7 @@ class SignalConn:
 
     async def connect(self) -> None:
         """Connect to the server and start the background reader."""
+        await self.aclose()
         self._closed = False
         self._sig_queue = asyncio.Queue(maxsize=64)
         host, port = self.server
