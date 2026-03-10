@@ -445,17 +445,18 @@ class _AsyncBase:
             return
         self._closed = True
         await self._cancel_renew()
-        if self._writer:
-            try:
-                self._writer.close()
-            except Exception:
-                pass
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(self._writer.wait_closed(), timeout=5)
+        writer = self._writer
         self._reader = None
         self._writer = None
         self.token = None
         self.lease = 0
+        if writer:
+            try:
+                writer.close()
+            except Exception:
+                pass
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(writer.wait_closed(), timeout=5)
 
 
 # ===========================================================================
@@ -724,7 +725,7 @@ class SignalConn:
                     fut = self._resp_future
                     if fut is not None and not fut.done():
                         fut.set_result(line)
-        except (ConnectionError, asyncio.CancelledError, RuntimeError):
+        except (ConnectionError, asyncio.CancelledError, RuntimeError, ValueError):
             pass
         finally:
             fut = self._resp_future
@@ -823,12 +824,13 @@ class SignalConn:
             with contextlib.suppress(BaseException):
                 await self._read_task
             self._read_task = None
-        if self._writer is not None:
+        writer = self._writer
+        self._reader = None
+        self._writer = None
+        if writer is not None:
             try:
-                self._writer.close()
+                writer.close()
             except Exception:
                 pass
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(self._writer.wait_closed(), timeout=5)
-        self._reader = None
-        self._writer = None
+                await asyncio.wait_for(writer.wait_closed(), timeout=5)

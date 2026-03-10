@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.8.11] - 2026-03-10
+
+### Fixed
+
+- Async `SignalConn._read_loop` did not catch `ValueError`, causing `UnicodeDecodeError` from malformed server responses to become an unhandled exception in the background reader task (sync version already handled this correctly)
+- `_AsyncBase.aclose()` and `SignalConn.aclose()` left stale `_reader`/`_writer`/`token` references if `CancelledError` was raised during `wait_closed()`, since `contextlib.suppress(Exception)` does not catch `BaseException` subclasses; state is now cleared before the cancellable await
+
+[v1.8.11]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.8.11
+
 ## [v1.8.10] - 2026-03-08
 
 ### Docs
