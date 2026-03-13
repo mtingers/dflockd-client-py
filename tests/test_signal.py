@@ -208,6 +208,118 @@ class TestSyncSentinelDeliveryWhenFull:
 
 
 # ===========================================================================
+# Heartbeat (ping) tests
+# ===========================================================================
+
+
+class TestAsyncHeartbeatDefault:
+    def test_default_interval(self):
+        sc = aclient.SignalConn()
+        assert sc.heartbeat_interval_s == 15.0
+
+    def test_custom_interval(self):
+        sc = aclient.SignalConn(heartbeat_interval_s=5.0)
+        assert sc.heartbeat_interval_s == 5.0
+
+    def test_disabled_when_zero(self):
+        sc = aclient.SignalConn(heartbeat_interval_s=0)
+        assert sc.heartbeat_interval_s == 0
+
+
+class TestSyncHeartbeatDefault:
+    def test_default_interval(self):
+        sc = sclient.SignalConn()
+        assert sc.heartbeat_interval_s == 15.0
+
+    def test_custom_interval(self):
+        sc = sclient.SignalConn(heartbeat_interval_s=5.0)
+        assert sc.heartbeat_interval_s == 5.0
+
+    def test_disabled_when_zero(self):
+        sc = sclient.SignalConn(heartbeat_interval_s=0)
+        assert sc.heartbeat_interval_s == 0
+
+
+class TestAsyncHeartbeatLoop:
+    async def test_heartbeat_sends_ping(self):
+        sc = aclient.SignalConn(heartbeat_interval_s=0.05)
+        pings = []
+
+        async def mock_send_cmd(cmd, key, arg):
+            pings.append((cmd, key, arg))
+            return "ok"
+
+        sc._send_cmd = mock_send_cmd  # type: ignore[assignment]
+        task = asyncio.create_task(sc._heartbeat_loop())
+        await asyncio.sleep(0.15)
+        task.cancel()
+        await task  # should return cleanly (CancelledError caught internally)
+        assert len(pings) >= 2
+        assert all(p == ("ping", "_", "") for p in pings)
+
+    async def test_heartbeat_stops_on_connection_error(self):
+        sc = aclient.SignalConn(heartbeat_interval_s=0.05)
+
+        async def mock_send_cmd(cmd, key, arg):
+            raise ConnectionError("closed")
+
+        sc._send_cmd = mock_send_cmd  # type: ignore[assignment]
+        await sc._heartbeat_loop()  # should return, not raise
+
+    async def test_heartbeat_not_started_when_zero(self):
+        sc = aclient.SignalConn(
+            server=("127.0.0.1", 1),
+            connect_timeout_s=0.1,
+            heartbeat_interval_s=0,
+        )
+        with pytest.raises((ConnectionRefusedError, OSError, asyncio.TimeoutError)):
+            await sc.connect()
+        assert sc._heartbeat_task is None
+
+
+class TestSyncHeartbeatLoop:
+    def test_heartbeat_sends_ping(self):
+        sc = sclient.SignalConn(heartbeat_interval_s=0.05)
+        pings = []
+
+        def mock_send_cmd(cmd, key, arg):
+            pings.append((cmd, key, arg))
+            return "ok"
+
+        sc._send_cmd = mock_send_cmd  # type: ignore[assignment]
+        sc._heartbeat_stop = threading.Event()
+        t = threading.Thread(target=sc._heartbeat_loop, daemon=True)
+        t.start()
+        import time
+
+        time.sleep(0.15)
+        sc._heartbeat_stop.set()
+        t.join(timeout=2)
+        assert len(pings) >= 2
+        assert all(p == ("ping", "_", "") for p in pings)
+
+    def test_heartbeat_stops_on_connection_error(self):
+        sc = sclient.SignalConn(heartbeat_interval_s=0.05)
+
+        def mock_send_cmd(cmd, key, arg):
+            raise ConnectionError("closed")
+
+        sc._send_cmd = mock_send_cmd  # type: ignore[assignment]
+        sc._heartbeat_stop = threading.Event()
+        sc._heartbeat_loop()  # should return, not raise
+
+    def test_heartbeat_not_started_when_zero(self):
+        sc = sclient.SignalConn(
+            server=("127.0.0.1", 1),
+            connect_timeout_s=0.1,
+            heartbeat_interval_s=0,
+        )
+        with pytest.raises((ConnectionRefusedError, OSError)):
+            sc.connect()
+        assert sc._heartbeat_thread is None
+
+
+# ===========================================================================
 # Bug fix: sync _read_loop must not block on full _resp_queue
 # ===========================================================================
 

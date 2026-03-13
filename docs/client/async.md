@@ -297,6 +297,16 @@ The `signals` property returns an `asyncio.Queue[Signal | None]`. A `None` senti
 | `ssl_context` | `ssl.SSLContext \| None` | `None` | TLS context. `None` uses plain TCP |
 | `auth_token` | `str \| None` | `None` | Auth token. `None` skips auth |
 | `connect_timeout_s` | `float` | `10` | Seconds to wait for the TCP connection |
+| `heartbeat_interval_s` | `float` | `15.0` | Seconds between ping heartbeats. Set to `0` to disable |
+
+### Heartbeat
+
+`SignalConn` sends periodic `ping` commands in a background task to prevent idle connections from being disconnected by the server's read timeout. The default interval is 15 seconds. Set `heartbeat_interval_s=0` to disable:
+
+```python
+async with SignalConn(server=("127.0.0.1", 6388), heartbeat_interval_s=0) as sc:
+    ...  # no automatic pings
+```
 
 ### Low-level sig_emit
 

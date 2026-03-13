@@ -7,6 +7,7 @@ log = logging.getLogger("dflockd-client")
 
 _MAX_LINE_LEN = 1_048_576  # 1 MiB — guard against unbounded server responses
 _CONNECT_TIMEOUT_S = 10
+_DEFAULT_HEARTBEAT_INTERVAL_S = 15.0
 
 
 def encode_lines(*lines: str) -> bytes:

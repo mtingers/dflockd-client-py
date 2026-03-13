@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.9.0] - 2026-03-13
+
+### Added
+
+- Ping heartbeat for `SignalConn` (async and sync) to prevent idle signal listener connections from being disconnected by the server's read timeout (requires dflockd v1.14.0+)
+- `heartbeat_interval_s` parameter on both `AsyncSignalConn` and `SyncSignalConn` (default 15 seconds, set to 0 to disable)
+
+[v1.9.0]: https://github.com/mtingers/dflockd-client-py/releases/tag/v1.9.0
+
 ## [v1.8.11] - 2026-03-10
 
 ### Fixed

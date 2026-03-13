@@ -67,6 +67,8 @@ If renewal fails (server unreachable, lease already expired), the client logs an
 
 Signals are delivered to a queue (`asyncio.Queue` or `queue.Queue`) that can be consumed via iteration (`for sig in sc:` / `async for sig in sc:`). A `None` sentinel in the queue indicates the connection has been closed.
 
+To prevent idle signal connections from being disconnected by the server's read timeout, `SignalConn` sends periodic `ping` heartbeats (default every 15 seconds). This runs as a background `asyncio.Task` (async) or daemon `threading.Thread` (sync) and can be configured or disabled via `heartbeat_interval_s`.
+
 A standalone `sig_emit()` function is also available for fire-and-forget publishing on plain connections without the background reader overhead.
 
 ### Stats

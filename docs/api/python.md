@@ -274,6 +274,7 @@ class SignalConn:
     ssl_context: ssl.SSLContext | None = None
     auth_token: str | None = None
     connect_timeout_s: float = 10
+    heartbeat_interval_s: float = 15.0
 ```
 
 All parameters are keyword-only.
@@ -282,7 +283,7 @@ All parameters are keyword-only.
 
 | Method | Returns | Description |
 |---|---|---|
-| `await connect()` | `None` | Connect to the server and start background reader |
+| `await connect()` | `None` | Connect to the server and start background reader and heartbeat |
 | `await listen(pattern, *, group="")` | `None` | Subscribe to signals matching pattern |
 | `await unlisten(pattern, *, group="")` | `None` | Remove a signal subscription |
 | `await emit(channel, payload)` | `int` | Publish a signal. Returns delivery count |
@@ -544,6 +545,7 @@ class SignalConn:
     ssl_context: ssl.SSLContext | None = None
     auth_token: str | None = None
     connect_timeout_s: float = 10
+    heartbeat_interval_s: float = 15.0
 ```
 
 All parameters are keyword-only.
@@ -552,7 +554,7 @@ All parameters are keyword-only.
 
 | Method | Returns | Description |
 |---|---|---|
-| `connect()` | `None` | Connect to the server and start background reader thread |
+| `connect()` | `None` | Connect to the server and start background reader thread and heartbeat |
 | `listen(pattern, *, group="")` | `None` | Subscribe to signals matching pattern |
 | `unlisten(pattern, *, group="")` | `None` | Remove a signal subscription |
 | `emit(channel, payload)` | `int` | Publish a signal. Returns delivery count |

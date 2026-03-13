@@ -10,6 +10,7 @@ from typing import TextIO
 
 from ._common import (
     _CONNECT_TIMEOUT_S,
+    _DEFAULT_HEARTBEAT_INTERVAL_S,
     _MAX_LINE_LEN,
     Signal,
     StatsResult,
@@ -682,10 +683,17 @@ class SignalConn:
     ssl_context: ssl.SSLContext | None = None
     auth_token: str | None = None
     connect_timeout_s: float = _CONNECT_TIMEOUT_S
+    heartbeat_interval_s: float = _DEFAULT_HEARTBEAT_INTERVAL_S
 
     _sock: socket.socket | None = field(default=None, init=False, repr=False)
     _rfile: io.TextIOWrapper | None = field(default=None, init=False, repr=False)
     _read_thread: threading.Thread | None = field(default=None, init=False, repr=False)
+    _heartbeat_thread: threading.Thread | None = field(
+        default=None, init=False, repr=False
+    )
+    _heartbeat_stop: threading.Event = field(
+        default_factory=threading.Event, init=False, repr=False
+    )
     _sig_queue: queue.Queue[Signal | None] = field(
         default_factory=lambda: queue.Queue(maxsize=64), init=False, repr=False
     )
@@ -729,6 +737,19 @@ class SignalConn:
         self._sock.settimeout(None)
         self._read_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._read_thread.start()
+        self._heartbeat_stop = threading.Event()
+        if self.heartbeat_interval_s > 0:
+            self._heartbeat_thread = threading.Thread(
+                target=self._heartbeat_loop, daemon=True
+            )
+            self._heartbeat_thread.start()
+
+    def _heartbeat_loop(self) -> None:
+        while not self._heartbeat_stop.wait(self.heartbeat_interval_s):
+            try:
+                self._send_cmd("ping", "_", "")
+            except (ConnectionError, RuntimeError, OSError):
+                return
 
     def _read_loop(self) -> None:
         try:
@@ -851,6 +872,7 @@ class SignalConn:
         if self._closed:
             return
         self._closed = True
+        self._heartbeat_stop.set()
         sock = self._sock
         if sock is not None:
             try:
@@ -872,3 +894,6 @@ class SignalConn:
         if self._read_thread is not None:
             self._read_thread.join(timeout=5)
             self._read_thread = None
+        if self._heartbeat_thread is not None:
+            self._heartbeat_thread.join(timeout=5)
+            self._heartbeat_thread = None

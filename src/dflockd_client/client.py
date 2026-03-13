@@ -7,6 +7,7 @@ from dataclasses import KW_ONLY, dataclass, field
 
 from ._common import (
     _CONNECT_TIMEOUT_S,
+    _DEFAULT_HEARTBEAT_INTERVAL_S,
     _MAX_LINE_LEN,
     Signal,
     StatsResult,
@@ -664,10 +665,14 @@ class SignalConn:
     ssl_context: ssl.SSLContext | None = None
     auth_token: str | None = None
     connect_timeout_s: float = _CONNECT_TIMEOUT_S
+    heartbeat_interval_s: float = _DEFAULT_HEARTBEAT_INTERVAL_S
 
     _reader: asyncio.StreamReader | None = field(default=None, init=False, repr=False)
     _writer: asyncio.StreamWriter | None = field(default=None, init=False, repr=False)
     _read_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
+    _heartbeat_task: asyncio.Task[None] | None = field(
+        default=None, init=False, repr=False
+    )
     _sig_queue: asyncio.Queue[Signal | None] = field(
         default_factory=lambda: asyncio.Queue(maxsize=64), init=False, repr=False
     )
@@ -705,6 +710,19 @@ class SignalConn:
                 await self.aclose()
                 raise PermissionError(f"authentication failed: {resp!r}")
         self._read_task = asyncio.create_task(self._read_loop())
+        if self.heartbeat_interval_s > 0:
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+    async def _heartbeat_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self.heartbeat_interval_s)
+                try:
+                    await self._send_cmd("ping", "_", "")
+                except (ConnectionError, RuntimeError):
+                    return
+        except asyncio.CancelledError:
+            return
 
     async def _read_loop(self) -> None:
         assert self._reader is not None
@@ -819,6 +837,11 @@ class SignalConn:
         if self._closed:
             return
         self._closed = True
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            with contextlib.suppress(BaseException):
+                await self._heartbeat_task
+            self._heartbeat_task = None
         if self._read_task is not None:
             self._read_task.cancel()
             with contextlib.suppress(BaseException):
