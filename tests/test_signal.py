@@ -355,8 +355,47 @@ class TestSyncRespQueueNonBlocking:
 
 
 # ===========================================================================
-# Async integration tests (require running dflockd server)
+# Bug fix: async _send_cmd must clear _resp_future on early cancellation
+# so the next caller's response is not mis-routed
 # ===========================================================================
+
+
+class TestAsyncSendCmdCancellation:
+    async def test_resp_future_cleared_on_cancellation_during_drain(self):
+        """If the awaiting task is cancelled before we reach the
+        try/finally, _resp_future must still be reset to None — otherwise
+        the in-flight response binds to an orphan future and the next
+        caller's response gets mis-routed.
+        """
+        sc = aclient.SignalConn()
+        # Stub writer so drain() awaits forever — simulates a slow flush
+        # that gets cancelled before the response future is awaited.
+        drain_waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+        class _BlockingWriter:
+            def write(self, data: bytes) -> None:
+                pass
+
+            async def drain(self) -> None:
+                await drain_waiter
+
+        sc._writer = _BlockingWriter()  # type: ignore[assignment]
+
+        async def call_send_cmd():
+            return await sc._send_cmd("listen", "x.>", "")
+
+        task = asyncio.create_task(call_send_cmd())
+        # Yield so call_send_cmd advances into the lock and assigns _resp_future.
+        await asyncio.sleep(0.01)
+        assert sc._resp_future is not None, "future should be set before cancel"
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # The orphan future must be cleared so a subsequent _send_cmd doesn't
+        # collide with a late response from the cancelled command.
+        assert sc._resp_future is None
 
 
 class TestAsyncSigEmit:

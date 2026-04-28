@@ -8,6 +8,7 @@ from dataclasses import KW_ONLY, dataclass, field
 from ._common import (
     _CONNECT_TIMEOUT_S,
     _DEFAULT_HEARTBEAT_INTERVAL_S,
+    _IO_TIMEOUT_SLACK_S,
     _MAX_LINE_LEN,
     Signal,
     StatsResult,
@@ -324,8 +325,17 @@ class _AsyncBase:
 
     async def acquire(self) -> bool:
         reader, writer = await self._connect()
+        # Cap how long we'll wait on the response. The server enforces
+        # acquire_timeout_s itself and returns "timeout" within that
+        # window, so + _IO_TIMEOUT_SLACK_S is enough headroom for normal
+        # network and processing latency. Without this, an unresponsive
+        # server with a still-open TCP socket would wedge the caller
+        # indefinitely. Mirrors sync_client's settimeout(timeout + 30).
         try:
-            self.token, self.lease = await self._proto_acquire(reader, writer)
+            self.token, self.lease = await asyncio.wait_for(
+                self._proto_acquire(reader, writer),
+                timeout=self.acquire_timeout_s + _IO_TIMEOUT_SLACK_S,
+            )
         except TimeoutError:
             await self.aclose()
             return False
@@ -342,7 +352,10 @@ class _AsyncBase:
         """
         reader, writer = await self._connect()
         try:
-            status, tok, lease = await self._proto_enqueue(reader, writer)
+            status, tok, lease = await asyncio.wait_for(
+                self._proto_enqueue(reader, writer),
+                timeout=_IO_TIMEOUT_SLACK_S,
+            )
         except BaseException:
             await self.aclose()
             raise
@@ -364,8 +377,9 @@ class _AsyncBase:
             raise RuntimeError("not connected; call enqueue() first")
         timeout = timeout_s if timeout_s is not None else self.acquire_timeout_s
         try:
-            self.token, self.lease = await self._proto_wait(
-                self._reader, self._writer, timeout
+            self.token, self.lease = await asyncio.wait_for(
+                self._proto_wait(self._reader, self._writer, timeout),
+                timeout=timeout + _IO_TIMEOUT_SLACK_S,
             )
         except TimeoutError:
             await self.aclose()
