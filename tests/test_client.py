@@ -60,6 +60,18 @@ class TestCmdPrefixLimitInvariant:
         with pytest.raises(ValueError, match="cmd_prefix must be"):
             await aclient.acquire(None, None, "k", 1, cmd_prefix="x")  # type: ignore[arg-type]
 
+    async def test_async_renew_invalid_cmd_prefix_rejected(self):
+        with pytest.raises(ValueError, match="cmd_prefix must be"):
+            await aclient.renew(None, None, "k", "tok", cmd_prefix="sem")  # type: ignore[arg-type]
+
+    async def test_async_wait_invalid_cmd_prefix_rejected(self):
+        with pytest.raises(ValueError, match="cmd_prefix must be"):
+            await aclient.wait(None, None, "k", 1, cmd_prefix="x")  # type: ignore[arg-type]
+
+    async def test_async_release_invalid_cmd_prefix_rejected(self):
+        with pytest.raises(ValueError, match="cmd_prefix must be"):
+            await aclient.release(None, None, "k", "tok", cmd_prefix="x")  # type: ignore[arg-type]
+
     def test_sync_acquire_lock_with_limit_rejected(self):
         with pytest.raises(ValueError, match="limit must not be set"):
             sclient.acquire(None, None, "k", 1, limit=5)  # type: ignore[arg-type]
@@ -75,6 +87,18 @@ class TestCmdPrefixLimitInvariant:
     def test_sync_enqueue_sem_without_limit_rejected(self):
         with pytest.raises(ValueError, match="limit is required"):
             sclient.enqueue(None, None, "k", cmd_prefix="s")  # type: ignore[arg-type]
+
+    def test_sync_renew_invalid_cmd_prefix_rejected(self):
+        with pytest.raises(ValueError, match="cmd_prefix must be"):
+            sclient.renew(None, None, "k", "tok", cmd_prefix="sem")  # type: ignore[arg-type]
+
+    def test_sync_wait_invalid_cmd_prefix_rejected(self):
+        with pytest.raises(ValueError, match="cmd_prefix must be"):
+            sclient.wait(None, None, "k", 1, cmd_prefix="x")  # type: ignore[arg-type]
+
+    def test_sync_release_invalid_cmd_prefix_rejected(self):
+        with pytest.raises(ValueError, match="cmd_prefix must be"):
+            sclient.release(None, None, "k", "tok", cmd_prefix="x")  # type: ignore[arg-type]
 
 
 # ===========================================================================
@@ -179,6 +203,55 @@ class TestRenewUpdatesLease:
         assert lock.lease == 42, (
             f"lease should reflect post-renew remaining (got {lock.lease})"
         )
+
+
+# ===========================================================================
+# Bug fix: async release() must time out instead of hanging on a stuck server
+# ===========================================================================
+
+
+class TestAsyncReleaseTimeout:
+    async def test_release_times_out_when_server_hangs(self):
+        """If _proto_release blocks forever (server unresponsive but TCP
+        still open), release() must surface that as a logged failure and
+        return False rather than wedging the caller."""
+        lock = aclient.DistributedLock("k", acquire_timeout_s=1)
+        lock.token = "fake-token"
+        lock.lease = 60
+
+        class _W:
+            def is_closing(self): return False
+            def close(self): pass
+            async def wait_closed(self): return
+        lock._writer = _W()  # type: ignore[assignment]
+        lock._reader = object()  # type: ignore[assignment]
+
+        # Stub _proto_release so it never returns.
+        proto_started = asyncio.Event()
+
+        async def hung_release(reader, writer, token):
+            proto_started.set()
+            await asyncio.sleep(3600)
+
+        lock._proto_release = hung_release  # type: ignore[assignment]
+
+        # Patch the I/O slack constant to something tiny so the test runs
+        # quickly. The release path uses _IO_TIMEOUT_SLACK_S directly.
+        import dflockd_client.client as client_mod
+        original_slack = client_mod._IO_TIMEOUT_SLACK_S
+        client_mod._IO_TIMEOUT_SLACK_S = 0.1  # type: ignore[assignment]
+        try:
+            start = asyncio.get_running_loop().time()
+            result = await lock.release()
+            elapsed = asyncio.get_running_loop().time() - start
+        finally:
+            client_mod._IO_TIMEOUT_SLACK_S = original_slack  # type: ignore[assignment]
+
+        assert proto_started.is_set(), "release should have invoked _proto_release"
+        # The release attempt timed out so it returns False (not raise).
+        assert result is False
+        # And the caller wasn't wedged for long.
+        assert elapsed < 2, f"release blocked for {elapsed}s; should have timed out fast"
 
 
 # ===========================================================================
@@ -930,6 +1003,30 @@ class TestAsyncStats:
         finally:
             w1.close()
             w2.close()
+
+    async def test_stats_includes_signal_channels(self, server_host_port):
+        """The server returns `signal_channels` alongside the lock/sem
+        stats. The TypedDict must include this key and `idle_locks`/
+        `idle_semaphores` must be lists of dicts (with a `key` field),
+        not bare strings — which is what the prior type annotation
+        claimed."""
+        host, port = server_host_port
+        reader, writer = await _open(host, port)
+        try:
+            result = await aclient.stats(reader, writer)
+            # The new field exists and is a list (possibly empty).
+            assert "signal_channels" in result
+            assert isinstance(result["signal_channels"], list)
+            # Each idle entry, when present, is a dict — not a bare key string.
+            for entry in result["idle_locks"]:
+                assert isinstance(entry, dict)
+                assert "key" in entry
+            for entry in result["idle_semaphores"]:
+                assert isinstance(entry, dict)
+                assert "key" in entry
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
 
 # ===========================================================================

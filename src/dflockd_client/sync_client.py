@@ -14,6 +14,7 @@ from ._common import (
     _MAX_LINE_LEN,
     Signal,
     StatsResult,
+    _check_cmd_prefix,
     _check_cmd_prefix_limit,
     encode_lines,
     log,
@@ -80,6 +81,7 @@ def renew(
     *,
     cmd_prefix: str = "",
 ) -> int:
+    _check_cmd_prefix(cmd_prefix)
     arg = token if lease_ttl_s is None else f"{token} {lease_ttl_s}"
     sock.sendall(encode_lines(f"{cmd_prefix}n", key, arg))
 
@@ -144,6 +146,7 @@ def wait(
     Two-phase wait: block until lock/semaphore is granted.
     Returns (token, lease). Raises TimeoutError on timeout.
     """
+    _check_cmd_prefix(cmd_prefix)
     sock.sendall(encode_lines(f"{cmd_prefix}w", key, str(wait_timeout_s)))
 
     resp = _readline(rfile)
@@ -169,6 +172,7 @@ def release(
     *,
     cmd_prefix: str = "",
 ) -> None:
+    _check_cmd_prefix(cmd_prefix)
     sock.sendall(encode_lines(f"{cmd_prefix}r", key, token))
 
     resp = _readline(rfile)

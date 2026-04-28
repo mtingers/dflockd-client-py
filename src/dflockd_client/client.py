@@ -12,6 +12,7 @@ from ._common import (
     _MAX_LINE_LEN,
     Signal,
     StatsResult,
+    _check_cmd_prefix,
     _check_cmd_prefix_limit,
     encode_lines,
     log,
@@ -81,6 +82,7 @@ async def renew(
     *,
     cmd_prefix: str = "",
 ) -> int:
+    _check_cmd_prefix(cmd_prefix)
     arg = token if lease_ttl_s is None else f"{token} {lease_ttl_s}"
     writer.write(encode_lines(f"{cmd_prefix}n", key, arg))
     await writer.drain()
@@ -147,6 +149,7 @@ async def wait(
     Two-phase wait: block until lock/semaphore is granted.
     Returns (token, lease). Raises TimeoutError on timeout.
     """
+    _check_cmd_prefix(cmd_prefix)
     writer.write(encode_lines(f"{cmd_prefix}w", key, str(wait_timeout_s)))
     await writer.drain()
 
@@ -173,6 +176,7 @@ async def release(
     *,
     cmd_prefix: str = "",
 ) -> None:
+    _check_cmd_prefix(cmd_prefix)
     writer.write(encode_lines(f"{cmd_prefix}r", key, token))
     await writer.drain()
 
@@ -400,7 +404,16 @@ class _AsyncBase:
 
             if self._reader and self._writer and self.token:
                 try:
-                    await self._proto_release(self._reader, self._writer, self.token)
+                    # Cap how long we wait for the server's release ack
+                    # so a hung-but-connected server can't wedge release.
+                    # Mirrors sync_client's settimeout(30) on the release
+                    # path.
+                    await asyncio.wait_for(
+                        self._proto_release(
+                            self._reader, self._writer, self.token
+                        ),
+                        timeout=_IO_TIMEOUT_SLACK_S,
+                    )
                     released = True
                 except Exception:
                     log.warning(
