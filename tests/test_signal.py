@@ -380,6 +380,16 @@ class TestAsyncSendCmdCancellation:
                 await drain_waiter
 
         sc._writer = _BlockingWriter()  # type: ignore[assignment]
+        # _send_cmd now requires a live _read_task — without one it would
+        # short-circuit with ConnectionError before assigning _resp_future.
+        read_done: asyncio.Future[None] = (
+            asyncio.get_running_loop().create_future()
+        )
+
+        async def _live_read_task():
+            await read_done
+
+        sc._read_task = asyncio.create_task(_live_read_task())
 
         async def call_send_cmd():
             return await sc._send_cmd("listen", "x.>", "")
@@ -396,6 +406,70 @@ class TestAsyncSendCmdCancellation:
         # The orphan future must be cleared so a subsequent _send_cmd doesn't
         # collide with a late response from the cancelled command.
         assert sc._resp_future is None
+
+        # Cleanup: release the stub read_task.
+        read_done.set_result(None)
+        await sc._read_task
+
+
+class TestAsyncSendCmdAfterReadLoopExit:
+    async def test_send_cmd_raises_when_read_task_already_done(self):
+        """Server-initiated disconnect causes the read_loop to exit. If
+        _send_cmd is then called (e.g. by a user emit/listen call or the
+        heartbeat loop), it must surface ConnectionError instead of
+        deadlocking on an unresolvable response future. The read_loop's
+        finally only sets the future if it exists at the moment the loop
+        exits — once the loop is done, no one can resolve a future created
+        afterwards.
+        """
+        sc = aclient.SignalConn()
+
+        class _StubWriter:
+            def write(self, data: bytes) -> None:
+                pass
+
+            async def drain(self) -> None:
+                pass
+
+        sc._writer = _StubWriter()  # type: ignore[assignment]
+
+        async def _already_finished():
+            return None
+
+        sc._read_task = asyncio.create_task(_already_finished())
+        # Let the stub task complete so read_task.done() returns True.
+        await asyncio.sleep(0)
+        await sc._read_task
+        assert sc._read_task.done()
+
+        with pytest.raises(ConnectionError, match="connection closed"):
+            await asyncio.wait_for(sc._send_cmd("ping", "_", ""), timeout=2.0)
+
+    async def test_send_cmd_raises_when_read_task_dies_mid_call(self):
+        """Race: read_task is alive when _send_cmd starts but exits after
+        we've written the request and are awaiting the response. Without
+        racing the future against the read_task, the future never resolves
+        and the call hangs.
+        """
+        sc = aclient.SignalConn()
+
+        class _StubWriter:
+            def write(self, data: bytes) -> None:
+                pass
+
+            async def drain(self) -> None:
+                pass
+
+        sc._writer = _StubWriter()  # type: ignore[assignment]
+
+        # A read_task that completes after a short delay — simulates the
+        # server closing the socket while _send_cmd is awaiting response.
+        async def _exits_soon():
+            await asyncio.sleep(0.05)
+
+        sc._read_task = asyncio.create_task(_exits_soon())
+        with pytest.raises(ConnectionError, match="connection closed"):
+            await asyncio.wait_for(sc._send_cmd("ping", "_", ""), timeout=2.0)
 
 
 # ===========================================================================

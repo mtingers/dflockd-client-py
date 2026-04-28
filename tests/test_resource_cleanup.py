@@ -193,6 +193,59 @@ class TestAsyncDelClosesWriter:
 
 
 # ===========================================================================
+# SignalConn __del__ — closes underlying socket / writer if user forgot to close
+# ===========================================================================
+
+
+class TestSyncSignalConnDel:
+    def test_del_closes_socket_on_gc(self):
+        sc = sclient.SignalConn()
+        mock_sock = MagicMock(spec=socket.socket)
+        sc._sock = mock_sock
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sc.__del__()
+            sc._sock = None
+
+        mock_sock.close.assert_called_once()
+        resource_warnings = [x for x in w if issubclass(x.category, ResourceWarning)]
+        assert len(resource_warnings) == 1
+        assert "garbage collected" in str(resource_warnings[0].message)
+
+    def test_del_no_warning_when_never_connected(self):
+        sc = sclient.SignalConn()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sc.__del__()
+        assert len(w) == 0
+
+
+class TestAsyncSignalConnDel:
+    def test_del_closes_writer_on_gc(self):
+        sc = aclient.SignalConn()
+        mock_writer = MagicMock(spec=asyncio.StreamWriter)
+        sc._writer = mock_writer
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sc.__del__()
+            sc._writer = None
+
+        mock_writer.close.assert_called_once()
+        resource_warnings = [x for x in w if issubclass(x.category, ResourceWarning)]
+        assert len(resource_warnings) == 1
+        assert "garbage collected" in str(resource_warnings[0].message)
+
+    def test_del_no_warning_when_never_connected(self):
+        sc = aclient.SignalConn()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sc.__del__()
+        assert len(w) == 0
+
+
+# ===========================================================================
 # Async aclose() bounds wait_closed with a timeout
 # ===========================================================================
 

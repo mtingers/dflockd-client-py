@@ -717,6 +717,22 @@ class SignalConn:
     _closed: bool = field(default=False, init=False, repr=False)
     _dropped: int = field(default=0, init=False, repr=False)
 
+    def __del__(self):
+        try:
+            if self._sock is not None:
+                warnings.warn(
+                    f"{type(self).__name__} was garbage collected without "
+                    "calling close(). This leaks a connection.",
+                    ResourceWarning,
+                    stacklevel=1,
+                )
+                try:
+                    self._sock.close()
+                except Exception:
+                    pass
+        except BaseException:
+            pass
+
     def connect(self) -> None:
         """Connect to the server and start the background reader thread."""
         self.close()

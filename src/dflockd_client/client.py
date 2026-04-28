@@ -722,6 +722,25 @@ class SignalConn:
     _closed: bool = field(default=False, init=False, repr=False)
     _dropped: int = field(default=0, init=False, repr=False)
 
+    def __del__(self):
+        try:
+            if self._writer is not None:
+                warnings.warn(
+                    f"{type(self).__name__} was garbage collected without "
+                    "calling aclose(). This leaks a connection.",
+                    ResourceWarning,
+                    stacklevel=1,
+                )
+                # Best-effort cleanup: closing the StreamWriter's transport
+                # is synchronous and releases the FD even though we cannot
+                # await wait_closed() here.
+                try:
+                    self._writer.close()
+                except Exception:
+                    pass
+        except BaseException:
+            pass
+
     async def connect(self) -> None:
         """Connect to the server and start the background reader."""
         await self.aclose()
@@ -808,6 +827,15 @@ class SignalConn:
         async with self._cmd_lock:
             if self._writer is None:
                 raise RuntimeError("not connected; call connect() first")
+            read_task = self._read_task
+            # If the read loop has already terminated (server-initiated
+            # disconnect, peer reset, etc.), the response future would never
+            # be resolved — the read loop's finally block has already run,
+            # so it cannot set our exception. Surface the dead connection
+            # instead of hanging forever. Mirrors the sync path's
+            # read_thread.is_alive() check on each 1-second poll.
+            if read_task is None or read_task.done():
+                raise ConnectionError("connection closed")
             loop = asyncio.get_running_loop()
             # Future assignment must be inside the try so that a cancellation
             # or write/drain failure between assignment and the await still
@@ -817,7 +845,20 @@ class SignalConn:
             try:
                 self._writer.write(encode_lines(cmd, key, arg))
                 await self._writer.drain()
-                return await self._resp_future
+                # Race the response future against the read_task: if the
+                # read loop exits between the early check above and the
+                # await (e.g. peer closed mid-write), neither the finally
+                # block in _read_loop nor anything else will resolve our
+                # future. asyncio.wait does not cancel pending awaitables,
+                # so the read_task keeps running if it didn't complete.
+                done, _pending = await asyncio.wait(
+                    {self._resp_future, read_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if self._resp_future in done:
+                    return self._resp_future.result()
+                # read_task completed first — connection is gone.
+                raise ConnectionError("connection closed")
             finally:
                 self._resp_future = None
 
