@@ -766,10 +766,14 @@ class SignalConn:
             if self._writer is None:
                 raise RuntimeError("not connected; call connect() first")
             loop = asyncio.get_running_loop()
+            # Future assignment must be inside the try so that a cancellation
+            # or write/drain failure between assignment and the await still
+            # clears _resp_future. Otherwise the orphaned future captures the
+            # next caller's response and mis-routes it.
             self._resp_future = loop.create_future()
-            self._writer.write(encode_lines(cmd, key, arg))
-            await self._writer.drain()
             try:
+                self._writer.write(encode_lines(cmd, key, arg))
+                await self._writer.drain()
                 return await self._resp_future
             finally:
                 self._resp_future = None
