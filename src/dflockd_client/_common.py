@@ -22,6 +22,26 @@ def encode_lines(*lines: str) -> bytes:
     return ("".join(f"{ln}\n" for ln in lines)).encode("utf-8")
 
 
+def _check_cmd_prefix_limit(cmd_prefix: str, limit: int | None) -> None:
+    """Enforce the cmd_prefix/limit invariant for the public acquire and
+    enqueue protocol functions: the semaphore variants ('s' prefix) require
+    a limit; the lock variants (empty prefix) reject one. Without this
+    check, mismatched calls silently produce malformed protocol — e.g. a
+    lock acquire with `limit=5` sends "l key 5" which the server parses
+    as `<lease_ttl>=5`, not as a limit.
+    """
+    if cmd_prefix == "s":
+        if limit is None:
+            raise ValueError("limit is required when cmd_prefix='s' (semaphore)")
+        if limit <= 0:
+            raise ValueError("limit must be > 0")
+    elif cmd_prefix == "":
+        if limit is not None:
+            raise ValueError("limit must not be set when cmd_prefix='' (lock)")
+    else:
+        raise ValueError(f"cmd_prefix must be '' or 's', got {cmd_prefix!r}")
+
+
 def parse_lease(parts: list[str]) -> int:
     if len(parts) < 3:
         log.warning(

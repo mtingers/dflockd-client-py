@@ -398,6 +398,60 @@ class TestAsyncSendCmdCancellation:
         assert sc._resp_future is None
 
 
+# ===========================================================================
+# Bug fix: dropped_signals counter must increment when queue is full
+# ===========================================================================
+
+
+class TestAsyncDroppedSignals:
+    async def test_dropped_increments_on_full_queue(self):
+        sc = aclient.SignalConn()
+        for i in range(64):
+            sc._sig_queue.put_nowait(Signal(f"ch.{i}", str(i)))
+        assert sc._sig_queue.full()
+
+        # Feed one more "sig ..." line; the read loop must drop and bump.
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"sig overflow.channel payload\n")
+        reader.feed_eof()
+        sc._reader = reader
+
+        await sc._read_loop()
+
+        assert sc.dropped_signals == 1
+
+    async def test_dropped_zero_when_consumer_keeps_up(self):
+        sc = aclient.SignalConn()
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"sig a hello\nsig b world\n")
+        reader.feed_eof()
+        sc._reader = reader
+
+        await sc._read_loop()
+
+        assert sc.dropped_signals == 0
+
+
+class TestSyncDroppedSignals:
+    def test_dropped_increments_on_full_queue(self):
+        sc = sclient.SignalConn()
+        for i in range(64):
+            sc._sig_queue.put_nowait(Signal(f"ch.{i}", str(i)))
+        assert sc._sig_queue.full()
+
+        sc._rfile = io.StringIO("sig overflow.channel payload\n")
+        sc._read_loop()
+
+        assert sc.dropped_signals == 1
+
+    def test_dropped_zero_when_consumer_keeps_up(self):
+        sc = sclient.SignalConn()
+        sc._rfile = io.StringIO("sig a hello\nsig b world\n")
+        sc._read_loop()
+
+        assert sc.dropped_signals == 0
+
+
 class TestAsyncSigEmit:
     async def test_emit_returns_count(self, server_host_port):
         host, port = server_host_port

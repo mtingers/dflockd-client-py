@@ -29,6 +29,159 @@ def _sync_connect(host: str, port: int) -> tuple[socket.socket, io.TextIOWrapper
 
 
 # ===========================================================================
+# Validation: cmd_prefix and limit must agree on lock-vs-semaphore
+# ===========================================================================
+
+
+class TestCmdPrefixLimitInvariant:
+    """The unified acquire/enqueue protocol functions must reject mismatched
+    (cmd_prefix, limit) pairs. Without this check, a lock acquire with
+    `limit=N` was silently sent as `l <key> <timeout> <N>` which the server
+    parsed as `<lease_ttl>=N`, not as a limit — producing wrong protocol
+    behavior with no visible error."""
+
+    async def test_async_acquire_lock_with_limit_rejected(self):
+        with pytest.raises(ValueError, match="limit must not be set"):
+            await aclient.acquire(None, None, "k", 1, limit=5)  # type: ignore[arg-type]
+
+    async def test_async_acquire_sem_without_limit_rejected(self):
+        with pytest.raises(ValueError, match="limit is required"):
+            await aclient.acquire(None, None, "k", 1, cmd_prefix="s")  # type: ignore[arg-type]
+
+    async def test_async_enqueue_lock_with_limit_rejected(self):
+        with pytest.raises(ValueError, match="limit must not be set"):
+            await aclient.enqueue(None, None, "k", limit=5)  # type: ignore[arg-type]
+
+    async def test_async_enqueue_sem_without_limit_rejected(self):
+        with pytest.raises(ValueError, match="limit is required"):
+            await aclient.enqueue(None, None, "k", cmd_prefix="s")  # type: ignore[arg-type]
+
+    async def test_async_invalid_cmd_prefix_rejected(self):
+        with pytest.raises(ValueError, match="cmd_prefix must be"):
+            await aclient.acquire(None, None, "k", 1, cmd_prefix="x")  # type: ignore[arg-type]
+
+    def test_sync_acquire_lock_with_limit_rejected(self):
+        with pytest.raises(ValueError, match="limit must not be set"):
+            sclient.acquire(None, None, "k", 1, limit=5)  # type: ignore[arg-type]
+
+    def test_sync_acquire_sem_without_limit_rejected(self):
+        with pytest.raises(ValueError, match="limit is required"):
+            sclient.acquire(None, None, "k", 1, cmd_prefix="s")  # type: ignore[arg-type]
+
+    def test_sync_enqueue_lock_with_limit_rejected(self):
+        with pytest.raises(ValueError, match="limit must not be set"):
+            sclient.enqueue(None, None, "k", limit=5)  # type: ignore[arg-type]
+
+    def test_sync_enqueue_sem_without_limit_rejected(self):
+        with pytest.raises(ValueError, match="limit is required"):
+            sclient.enqueue(None, None, "k", cmd_prefix="s")  # type: ignore[arg-type]
+
+
+# ===========================================================================
+# Bug fix: self.lease must reflect the post-renew remaining seconds
+# ===========================================================================
+
+
+class TestRenewUpdatesLease:
+    async def test_async_renew_loop_updates_self_lease(self):
+        """After a successful renew, self.lease must be updated to the
+        server's reported remaining seconds, not left stale at the
+        initial-acquire value."""
+        lock = aclient.DistributedLock("k", acquire_timeout_s=1, renew_ratio=0.5)
+        lock.token = "fake-token"
+        lock.lease = 60  # initial lease at acquire
+
+        # Stub the protocol renew to return a different remaining value.
+        async def fake_renew(reader, writer, token):
+            return 42
+
+        lock._proto_renew = fake_renew  # type: ignore[assignment]
+
+        # Stub the writer/reader so the token-equality check inside the
+        # loop's lease update can run.
+        class _W:
+            def __init__(self): self._closed = False
+            def is_closing(self): return False
+        lock._writer = _W()  # type: ignore[assignment]
+        lock._reader = object()  # type: ignore[assignment]
+
+        # Run one iteration of the renew loop body manually using a
+        # short sleep, then cancel.
+        original_sleep = asyncio.sleep
+
+        async def fast_sleep(_):
+            await original_sleep(0)
+
+        # Patch sleep so we don't have to wait for the real interval.
+        import dflockd_client.client as client_mod
+        client_mod_asyncio_sleep = client_mod.asyncio.sleep
+        client_mod.asyncio.sleep = fast_sleep  # type: ignore[assignment]
+        try:
+            task = asyncio.create_task(lock._renew_loop())
+            # Yield enough times for one renew tick to land.
+            for _ in range(20):
+                await original_sleep(0)
+                if lock.lease == 42:
+                    break
+            task.cancel()
+            # _renew_loop catches CancelledError and returns cleanly,
+            # so the await doesn't raise — just wait for it to finish.
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        finally:
+            client_mod.asyncio.sleep = client_mod_asyncio_sleep
+
+        assert lock.lease == 42, (
+            f"lease should reflect post-renew remaining (got {lock.lease})"
+        )
+
+    def test_sync_renew_loop_updates_self_lease(self):
+        lock = sclient.DistributedLock("k", acquire_timeout_s=1, renew_ratio=0.5)
+        lock.token = "fake-token"
+        lock.lease = 60
+
+        # Stubs so the loop can step through one iteration.
+        renew_called = threading.Event()
+
+        def fake_renew(sock, rfile, token):
+            renew_called.set()
+            return 42
+
+        lock._proto_renew = fake_renew  # type: ignore[assignment]
+
+        # Make the loop think we have an active connection.
+        class _S:
+            def gettimeout(self): return None
+            def settimeout(self, _): pass
+        lock._sock = _S()  # type: ignore[assignment]
+        lock._rfile = io.StringIO("")  # type: ignore[assignment]
+
+        # Stop event with very short interval so we get an immediate tick.
+        # renew_ratio=0.5 * lease=60 = 30s; clamp to 0.001 by stubbing the
+        # _stop_event.wait method.
+        original_wait = lock._stop_event.wait
+
+        def fast_wait(timeout):
+            return original_wait(0.01)
+
+        lock._stop_event.wait = fast_wait  # type: ignore[assignment]
+
+        t = threading.Thread(target=lock._renew_loop, daemon=True)
+        t.start()
+        renew_called.wait(timeout=2)
+        # Allow the post-renew lease update to land.
+        time.sleep(0.05)
+        lock._stop_event.set()
+        t.join(timeout=2)
+
+        assert lock.lease == 42, (
+            f"lease should reflect post-renew remaining (got {lock.lease})"
+        )
+
+
+# ===========================================================================
 # Async client — low-level functions
 # ===========================================================================
 

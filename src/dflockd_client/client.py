@@ -12,6 +12,7 @@ from ._common import (
     _MAX_LINE_LEN,
     Signal,
     StatsResult,
+    _check_cmd_prefix_limit,
     encode_lines,
     log,
     parse_lease,
@@ -44,6 +45,7 @@ async def acquire(
     cmd_prefix: str = "",
     limit: int | None = None,
 ) -> tuple[str, int]:
+    _check_cmd_prefix_limit(cmd_prefix, limit)
     parts = [str(acquire_timeout_s)]
     if limit is not None:
         parts.append(str(limit))
@@ -110,6 +112,7 @@ async def enqueue(
     Two-phase enqueue: join FIFO queue, return immediately.
     Returns (status, token, lease) where status is "acquired" or "queued".
     """
+    _check_cmd_prefix_limit(cmd_prefix, limit)
     parts = []
     if limit is not None:
         parts.append(str(limit))
@@ -446,6 +449,13 @@ class _AsyncBase:
                     return
                 if remaining > 0:
                     interval = max(1.0, remaining * self.renew_ratio)
+                    # Keep self.lease in sync with the server's view so
+                    # callers querying it after a renew see the current
+                    # remaining seconds, not the stale value captured at
+                    # acquire time. Token-check above prevents clobbering
+                    # a fresh acquire that ran concurrently.
+                    if self.token == token:
+                        self.lease = remaining
         except asyncio.CancelledError:
             return
         finally:
@@ -697,12 +707,14 @@ class SignalConn:
         default=None, init=False, repr=False
     )
     _closed: bool = field(default=False, init=False, repr=False)
+    _dropped: int = field(default=0, init=False, repr=False)
 
     async def connect(self) -> None:
         """Connect to the server and start the background reader."""
         await self.aclose()
         self._closed = False
         self._sig_queue = asyncio.Queue(maxsize=64)
+        self._dropped = 0
         host, port = self.server
         self._reader, self._writer = await asyncio.wait_for(
             asyncio.open_connection(
@@ -752,7 +764,11 @@ class SignalConn:
                     try:
                         self._sig_queue.put_nowait(sig)
                     except asyncio.QueueFull:
-                        pass
+                        # Slow consumer — drop and bump the counter so
+                        # the user can detect lossy delivery via
+                        # dropped_signals. Matches the Go client's
+                        # DroppedSignals().
+                        self._dropped += 1
                 else:
                     fut = self._resp_future
                     if fut is not None and not fut.done():
@@ -832,6 +848,16 @@ class SignalConn:
     def signals(self) -> asyncio.Queue[Signal | None]:
         """Queue of received signals. ``None`` sentinel indicates connection closed."""
         return self._sig_queue
+
+    @property
+    def dropped_signals(self) -> int:
+        """Total signals dropped because the queue was full when they arrived.
+
+        Monotonically increasing across the lifetime of the current connection;
+        reset to zero on each :meth:`connect`. Use to detect slow-consumer
+        conditions — non-zero means signals were lost.
+        """
+        return self._dropped
 
     def __aiter__(self):
         return self._iter_signals()
