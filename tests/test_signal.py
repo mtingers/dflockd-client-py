@@ -55,6 +55,18 @@ class TestSigEmitValidation:
         with pytest.raises(ValueError, match="wildcards"):
             await aclient.sig_emit(None, None, "events.>", "x")  # type: ignore[arg-type]
 
+    async def test_async_empty_channel_rejected(self):
+        with pytest.raises(ValueError, match="channel must not be empty"):
+            await aclient.sig_emit(None, None, "", "x")  # type: ignore[arg-type]
+
+    async def test_async_empty_payload_rejected(self):
+        with pytest.raises(ValueError, match="payload must not be empty"):
+            await aclient.sig_emit(None, None, "events.login", "   ")  # type: ignore[arg-type]
+
+    async def test_async_oversized_payload_rejected(self):
+        with pytest.raises(ValueError, match="payload too large"):
+            await aclient.sig_emit(None, None, "events.large", "x" * (64 * 1024))  # type: ignore[arg-type]
+
     def test_sync_wildcard_star_rejected(self):
         with pytest.raises(ValueError, match="wildcards"):
             sclient.sig_emit(None, None, "events.*.login", "x")  # type: ignore[arg-type]
@@ -63,6 +75,18 @@ class TestSigEmitValidation:
         with pytest.raises(ValueError, match="wildcards"):
             sclient.sig_emit(None, None, "events.>", "x")  # type: ignore[arg-type]
 
+    def test_sync_empty_channel_rejected(self):
+        with pytest.raises(ValueError, match="channel must not be empty"):
+            sclient.sig_emit(None, None, "", "x")  # type: ignore[arg-type]
+
+    def test_sync_empty_payload_rejected(self):
+        with pytest.raises(ValueError, match="payload must not be empty"):
+            sclient.sig_emit(None, None, "events.login", "   ")  # type: ignore[arg-type]
+
+    def test_sync_oversized_payload_rejected(self):
+        with pytest.raises(ValueError, match="payload too large"):
+            sclient.sig_emit(None, None, "events.large", "x" * (64 * 1024))  # type: ignore[arg-type]
+
 
 class TestAsyncSignalConnEmitValidation:
     async def test_emit_rejects_wildcards(self):
@@ -70,6 +94,16 @@ class TestAsyncSignalConnEmitValidation:
         # Not connected, but validation runs before any I/O
         with pytest.raises(ValueError, match="wildcards"):
             await sc.emit("events.*", "x")
+
+    async def test_emit_rejects_empty_payload(self):
+        sc = aclient.SignalConn()
+        with pytest.raises(ValueError, match="payload must not be empty"):
+            await sc.emit("events.login", "")
+
+    async def test_listen_rejects_empty_pattern(self):
+        sc = aclient.SignalConn()
+        with pytest.raises(ValueError, match="pattern must not be empty"):
+            await sc.listen("")
 
     async def test_not_connected_raises(self):
         sc = aclient.SignalConn()
@@ -82,6 +116,16 @@ class TestSyncSignalConnEmitValidation:
         sc = sclient.SignalConn()
         with pytest.raises(ValueError, match="wildcards"):
             sc.emit("events.*", "x")
+
+    def test_emit_rejects_empty_payload(self):
+        sc = sclient.SignalConn()
+        with pytest.raises(ValueError, match="payload must not be empty"):
+            sc.emit("events.login", "")
+
+    def test_listen_rejects_empty_pattern(self):
+        sc = sclient.SignalConn()
+        with pytest.raises(ValueError, match="pattern must not be empty"):
+            sc.listen("")
 
     def test_not_connected_raises(self):
         sc = sclient.SignalConn()

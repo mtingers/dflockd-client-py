@@ -1,6 +1,18 @@
 from importlib.metadata import PackageNotFoundError, version
 
-from ._common import Signal, StatsResult
+from ._common import (
+    AlreadyQueuedError,
+    AuthError,
+    DflockdError,
+    DrainingError,
+    LeaseExpiredError,
+    LimitMismatchError,
+    MaxLocksError,
+    MaxWaitersError,
+    NotQueuedError,
+    Signal,
+    StatsResult,
+)
 from .client import DistributedLock as AsyncDistributedLock
 from .client import DistributedSemaphore as AsyncDistributedSemaphore
 from .sharding import DEFAULT_SERVERS, ShardingStrategy, stable_hash_shard
@@ -17,6 +29,15 @@ except PackageNotFoundError:
 __all__ = [
     "__version__",
     "StatsResult",
+    "DflockdError",
+    "AuthError",
+    "MaxLocksError",
+    "MaxWaitersError",
+    "LimitMismatchError",
+    "NotQueuedError",
+    "AlreadyQueuedError",
+    "LeaseExpiredError",
+    "DrainingError",
     "DEFAULT_SERVERS",
     "ShardingStrategy",
     "stable_hash_shard",

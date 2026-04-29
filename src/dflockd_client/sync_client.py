@@ -12,10 +12,19 @@ from ._common import (
     _CONNECT_TIMEOUT_S,
     _DEFAULT_HEARTBEAT_INTERVAL_S,
     _MAX_LINE_LEN,
+    _raise_status_error,
     Signal,
     StatsResult,
     _check_cmd_prefix,
     _check_cmd_prefix_limit,
+    _validate_auth_token,
+    _validate_key,
+    _validate_lease_ttl_s,
+    _validate_protocol_line,
+    _validate_signal_channel,
+    _validate_signal_payload,
+    _validate_timeout_s,
+    _validate_token,
     encode_lines,
     log,
     parse_lease,
@@ -48,12 +57,16 @@ def acquire(
     limit: int | None = None,
 ) -> tuple[str, int]:
     _check_cmd_prefix_limit(cmd_prefix, limit)
+    _validate_key("key", key)
+    _validate_timeout_s("acquire_timeout_s", acquire_timeout_s)
+    _validate_lease_ttl_s(lease_ttl_s)
     parts = [str(acquire_timeout_s)]
     if limit is not None:
         parts.append(str(limit))
     if lease_ttl_s is not None:
         parts.append(str(lease_ttl_s))
     arg = " ".join(parts)
+    _validate_protocol_line("acquire argument", arg)
 
     sock.sendall(encode_lines(f"{cmd_prefix}l", key, arg))
 
@@ -62,7 +75,8 @@ def acquire(
     if resp == "timeout":
         raise TimeoutError(f"timeout acquiring {label}")
     if not resp.startswith("ok "):
-        raise RuntimeError(f"acquire failed: {resp!r}")
+        func = f"{'sem_' if cmd_prefix else ''}acquire"
+        _raise_status_error(func, resp)
 
     resp_parts = resp.split()
     if len(resp_parts) < 2:
@@ -82,13 +96,17 @@ def renew(
     cmd_prefix: str = "",
 ) -> int:
     _check_cmd_prefix(cmd_prefix)
+    _validate_key("key", key)
+    _validate_token(token)
+    _validate_lease_ttl_s(lease_ttl_s)
     arg = token if lease_ttl_s is None else f"{token} {lease_ttl_s}"
+    _validate_protocol_line("renew argument", arg)
     sock.sendall(encode_lines(f"{cmd_prefix}n", key, arg))
 
     resp = _readline(rfile)
     func = f"{'sem_' if cmd_prefix else ''}renew"
     if resp != "ok" and not resp.startswith("ok "):
-        raise RuntimeError(f"{func} failed: {resp!r}")
+        _raise_status_error(func, resp)
 
     parts = resp.split()
     if len(parts) >= 2:
@@ -113,12 +131,15 @@ def enqueue(
     Returns (status, token, lease) where status is "acquired" or "queued".
     """
     _check_cmd_prefix_limit(cmd_prefix, limit)
+    _validate_key("key", key)
+    _validate_lease_ttl_s(lease_ttl_s)
     parts = []
     if limit is not None:
         parts.append(str(limit))
     if lease_ttl_s is not None:
         parts.append(str(lease_ttl_s))
     arg = " ".join(parts)
+    _validate_protocol_line("enqueue argument", arg)
     sock.sendall(encode_lines(f"{cmd_prefix}e", key, arg))
 
     resp = _readline(rfile)
@@ -131,7 +152,8 @@ def enqueue(
         return ("acquired", token, lease)
     if resp == "queued":
         return ("queued", None, None)
-    raise RuntimeError(f"enqueue failed: {resp!r}")
+    func = f"{'sem_' if cmd_prefix else ''}enqueue"
+    _raise_status_error(func, resp)
 
 
 def wait(
@@ -147,6 +169,9 @@ def wait(
     Returns (token, lease). Raises TimeoutError on timeout.
     """
     _check_cmd_prefix(cmd_prefix)
+    _validate_key("key", key)
+    _validate_timeout_s("wait_timeout_s", wait_timeout_s)
+    _validate_protocol_line("wait argument", str(wait_timeout_s))
     sock.sendall(encode_lines(f"{cmd_prefix}w", key, str(wait_timeout_s)))
 
     resp = _readline(rfile)
@@ -154,7 +179,8 @@ def wait(
     if resp == "timeout":
         raise TimeoutError(f"timeout waiting for {label}")
     if not resp.startswith("ok "):
-        raise RuntimeError(f"wait failed: {resp!r}")
+        func = f"{'sem_' if cmd_prefix else ''}wait"
+        _raise_status_error(func, resp)
 
     parts = resp.split()
     if len(parts) < 2:
@@ -173,12 +199,14 @@ def release(
     cmd_prefix: str = "",
 ) -> None:
     _check_cmd_prefix(cmd_prefix)
+    _validate_key("key", key)
+    _validate_token(token)
     sock.sendall(encode_lines(f"{cmd_prefix}r", key, token))
 
     resp = _readline(rfile)
     func = f"{'sem_' if cmd_prefix else ''}release"
     if resp != "ok":
-        raise RuntimeError(f"{func} failed: {resp!r}")
+        _raise_status_error(func, resp)
 
 
 def stats(sock: socket.socket, rfile: io.TextIOWrapper) -> StatsResult:
@@ -309,7 +337,8 @@ class _SyncBase:
             self._sock = None
             self._rfile = None
             raise
-        if self.auth_token is not None:
+        if self.auth_token:
+            _validate_auth_token(self.auth_token)
             try:
                 self._sock.sendall(encode_lines("auth", "_", self.auth_token))
                 resp = _readline(self._rfile)
@@ -599,6 +628,7 @@ def sem_release(
 
 @dataclass
 class DistributedSemaphore(_SyncBase):
+    _: KW_ONLY
     limit: int
 
     def __post_init__(self):
@@ -653,12 +683,12 @@ def sig_emit(
     Returns the number of listeners the signal was delivered to.
     Works on a plain sock/rfile pair without a SignalConn.
     """
-    if "*" in channel or ">" in channel:
-        raise ValueError("channel must not contain wildcards (* or >)")
+    _validate_signal_channel(channel)
+    _validate_signal_payload(channel, payload)
     sock.sendall(encode_lines("signal", channel, payload))
     resp = _readline(rfile)
     if not resp.startswith("ok "):
-        raise RuntimeError(f"signal failed: {resp!r}")
+        _raise_status_error("signal", resp)
     parts = resp.split()
     if len(parts) < 2:
         raise RuntimeError(f"bad signal response: {resp!r}")
@@ -753,7 +783,8 @@ class SignalConn:
             self._sock = None
             self._rfile = None
             raise
-        if self.auth_token is not None:
+        if self.auth_token:
+            _validate_auth_token(self.auth_token)
             try:
                 self._sock.sendall(encode_lines("auth", "_", self.auth_token))
                 resp = _readline(self._rfile)
@@ -860,27 +891,31 @@ class SignalConn:
         ``>`` matches one or more trailing tokens.
         *group* enables queue-group load balancing (round-robin within group).
         """
+        _validate_key("pattern", pattern)
+        _validate_protocol_line("group", group)
         resp = self._send_cmd("listen", pattern, group)
         if resp != "ok":
-            raise RuntimeError(f"listen failed: {resp!r}")
+            _raise_status_error("listen", resp)
 
     def unlisten(self, pattern: str, *, group: str = "") -> None:
         """Remove a signal subscription. Pattern and group must match the
         original :meth:`listen` call."""
+        _validate_key("pattern", pattern)
+        _validate_protocol_line("group", group)
         resp = self._send_cmd("unlisten", pattern, group)
         if resp != "ok":
-            raise RuntimeError(f"unlisten failed: {resp!r}")
+            _raise_status_error("unlisten", resp)
 
     def emit(self, channel: str, payload: str) -> int:
         """Publish a signal on a literal channel (no wildcards).
 
         Returns the number of listeners the signal was delivered to.
         """
-        if "*" in channel or ">" in channel:
-            raise ValueError("channel must not contain wildcards (* or >)")
+        _validate_signal_channel(channel)
+        _validate_signal_payload(channel, payload)
         resp = self._send_cmd("signal", channel, payload)
         if not resp.startswith("ok "):
-            raise RuntimeError(f"signal failed: {resp!r}")
+            _raise_status_error("signal", resp)
         parts = resp.split()
         if len(parts) < 2:
             raise RuntimeError(f"bad signal response: {resp!r}")

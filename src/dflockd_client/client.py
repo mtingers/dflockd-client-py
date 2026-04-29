@@ -10,10 +10,19 @@ from ._common import (
     _DEFAULT_HEARTBEAT_INTERVAL_S,
     _IO_TIMEOUT_SLACK_S,
     _MAX_LINE_LEN,
+    _raise_status_error,
     Signal,
     StatsResult,
     _check_cmd_prefix,
     _check_cmd_prefix_limit,
+    _validate_auth_token,
+    _validate_key,
+    _validate_lease_ttl_s,
+    _validate_protocol_line,
+    _validate_signal_channel,
+    _validate_signal_payload,
+    _validate_timeout_s,
+    _validate_token,
     encode_lines,
     log,
     parse_lease,
@@ -47,12 +56,16 @@ async def acquire(
     limit: int | None = None,
 ) -> tuple[str, int]:
     _check_cmd_prefix_limit(cmd_prefix, limit)
+    _validate_key("key", key)
+    _validate_timeout_s("acquire_timeout_s", acquire_timeout_s)
+    _validate_lease_ttl_s(lease_ttl_s)
     parts = [str(acquire_timeout_s)]
     if limit is not None:
         parts.append(str(limit))
     if lease_ttl_s is not None:
         parts.append(str(lease_ttl_s))
     arg = " ".join(parts)
+    _validate_protocol_line("acquire argument", arg)
 
     writer.write(encode_lines(f"{cmd_prefix}l", key, arg))
     await writer.drain()
@@ -62,7 +75,8 @@ async def acquire(
     if resp == "timeout":
         raise TimeoutError(f"timeout acquiring {label}")
     if not resp.startswith("ok "):
-        raise RuntimeError(f"acquire failed: {resp!r}")
+        func = f"{'sem_' if cmd_prefix else ''}acquire"
+        _raise_status_error(func, resp)
 
     # ok <token> <lease>
     resp_parts = resp.split()
@@ -83,14 +97,18 @@ async def renew(
     cmd_prefix: str = "",
 ) -> int:
     _check_cmd_prefix(cmd_prefix)
+    _validate_key("key", key)
+    _validate_token(token)
+    _validate_lease_ttl_s(lease_ttl_s)
     arg = token if lease_ttl_s is None else f"{token} {lease_ttl_s}"
+    _validate_protocol_line("renew argument", arg)
     writer.write(encode_lines(f"{cmd_prefix}n", key, arg))
     await writer.drain()
 
     resp = await _readline(reader)
     func = f"{'sem_' if cmd_prefix else ''}renew"
     if resp != "ok" and not resp.startswith("ok "):
-        raise RuntimeError(f"{func} failed: {resp!r}")
+        _raise_status_error(func, resp)
 
     parts = resp.split()
     if len(parts) >= 2:
@@ -115,12 +133,15 @@ async def enqueue(
     Returns (status, token, lease) where status is "acquired" or "queued".
     """
     _check_cmd_prefix_limit(cmd_prefix, limit)
+    _validate_key("key", key)
+    _validate_lease_ttl_s(lease_ttl_s)
     parts = []
     if limit is not None:
         parts.append(str(limit))
     if lease_ttl_s is not None:
         parts.append(str(lease_ttl_s))
     arg = " ".join(parts)
+    _validate_protocol_line("enqueue argument", arg)
     writer.write(encode_lines(f"{cmd_prefix}e", key, arg))
     await writer.drain()
 
@@ -134,7 +155,8 @@ async def enqueue(
         return ("acquired", token, lease)
     if resp == "queued":
         return ("queued", None, None)
-    raise RuntimeError(f"enqueue failed: {resp!r}")
+    func = f"{'sem_' if cmd_prefix else ''}enqueue"
+    _raise_status_error(func, resp)
 
 
 async def wait(
@@ -150,6 +172,9 @@ async def wait(
     Returns (token, lease). Raises TimeoutError on timeout.
     """
     _check_cmd_prefix(cmd_prefix)
+    _validate_key("key", key)
+    _validate_timeout_s("wait_timeout_s", wait_timeout_s)
+    _validate_protocol_line("wait argument", str(wait_timeout_s))
     writer.write(encode_lines(f"{cmd_prefix}w", key, str(wait_timeout_s)))
     await writer.drain()
 
@@ -158,7 +183,8 @@ async def wait(
     if resp == "timeout":
         raise TimeoutError(f"timeout waiting for {label}")
     if not resp.startswith("ok "):
-        raise RuntimeError(f"wait failed: {resp!r}")
+        func = f"{'sem_' if cmd_prefix else ''}wait"
+        _raise_status_error(func, resp)
 
     parts = resp.split()
     if len(parts) < 2:
@@ -177,13 +203,15 @@ async def release(
     cmd_prefix: str = "",
 ) -> None:
     _check_cmd_prefix(cmd_prefix)
+    _validate_key("key", key)
+    _validate_token(token)
     writer.write(encode_lines(f"{cmd_prefix}r", key, token))
     await writer.drain()
 
     resp = await _readline(reader)
     func = f"{'sem_' if cmd_prefix else ''}release"
     if resp != "ok":
-        raise RuntimeError(f"{func} failed: {resp!r}")
+        _raise_status_error(func, resp)
 
 
 async def stats(
@@ -315,7 +343,8 @@ class _AsyncBase:
             ),
             timeout=self.connect_timeout_s,
         )
-        if self.auth_token is not None:
+        if self.auth_token:
+            _validate_auth_token(self.auth_token)
             try:
                 self._writer.write(encode_lines("auth", "_", self.auth_token))
                 await self._writer.drain()
@@ -599,6 +628,7 @@ async def sem_release(
 
 @dataclass
 class DistributedSemaphore(_AsyncBase):
+    _: KW_ONLY
     limit: int
 
     def __post_init__(self):
@@ -660,13 +690,13 @@ async def sig_emit(
     Returns the number of listeners the signal was delivered to.
     Works on a plain reader/writer pair without a SignalConn.
     """
-    if "*" in channel or ">" in channel:
-        raise ValueError("channel must not contain wildcards (* or >)")
+    _validate_signal_channel(channel)
+    _validate_signal_payload(channel, payload)
     writer.write(encode_lines("signal", channel, payload))
     await writer.drain()
     resp = await _readline(reader)
     if not resp.startswith("ok "):
-        raise RuntimeError(f"signal failed: {resp!r}")
+        _raise_status_error("signal", resp)
     parts = resp.split()
     if len(parts) < 2:
         raise RuntimeError(f"bad signal response: {resp!r}")
@@ -754,7 +784,8 @@ class SignalConn:
             ),
             timeout=self.connect_timeout_s,
         )
-        if self.auth_token is not None:
+        if self.auth_token:
+            _validate_auth_token(self.auth_token)
             try:
                 self._writer.write(encode_lines("auth", "_", self.auth_token))
                 await self._writer.drain()
@@ -911,27 +942,31 @@ class SignalConn:
         ``>`` matches one or more trailing tokens.
         *group* enables queue-group load balancing (round-robin within group).
         """
+        _validate_key("pattern", pattern)
+        _validate_protocol_line("group", group)
         resp = await self._send_cmd("listen", pattern, group)
         if resp != "ok":
-            raise RuntimeError(f"listen failed: {resp!r}")
+            _raise_status_error("listen", resp)
 
     async def unlisten(self, pattern: str, *, group: str = "") -> None:
         """Remove a signal subscription. Pattern and group must match the
         original :meth:`listen` call."""
+        _validate_key("pattern", pattern)
+        _validate_protocol_line("group", group)
         resp = await self._send_cmd("unlisten", pattern, group)
         if resp != "ok":
-            raise RuntimeError(f"unlisten failed: {resp!r}")
+            _raise_status_error("unlisten", resp)
 
     async def emit(self, channel: str, payload: str) -> int:
         """Publish a signal on a literal channel (no wildcards).
 
         Returns the number of listeners the signal was delivered to.
         """
-        if "*" in channel or ">" in channel:
-            raise ValueError("channel must not contain wildcards (* or >)")
+        _validate_signal_channel(channel)
+        _validate_signal_payload(channel, payload)
         resp = await self._send_cmd("signal", channel, payload)
         if not resp.startswith("ok "):
-            raise RuntimeError(f"signal failed: {resp!r}")
+            _raise_status_error("signal", resp)
         parts = resp.split()
         if len(parts) < 2:
             raise RuntimeError(f"bad signal response: {resp!r}")

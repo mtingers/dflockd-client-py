@@ -5,6 +5,7 @@ These tests use mocking/fakes — no dflockd server required.
 
 import asyncio
 import gc
+import inspect
 import io
 import json
 import socket
@@ -16,7 +17,7 @@ import pytest
 
 import dflockd_client.client as aclient
 import dflockd_client.sync_client as sclient
-from dflockd_client._common import _MAX_LINE_LEN
+from dflockd_client._common import _MAX_LINE_LEN, MaxLocksError, NotQueuedError
 
 
 # ===========================================================================
@@ -859,6 +860,101 @@ class TestDefaultServers:
 
 
 # ===========================================================================
+# Client-side protocol validation
+# ===========================================================================
+
+
+class TestProtocolValidation:
+    async def test_async_rejects_empty_key_before_io(self):
+        with pytest.raises(ValueError, match="key must not be empty"):
+            await aclient.acquire(None, None, "", 1)  # type: ignore[arg-type]
+
+    async def test_async_rejects_whitespace_key_before_io(self):
+        with pytest.raises(ValueError, match="key must not contain whitespace"):
+            await aclient.acquire(None, None, "bad key", 1)  # type: ignore[arg-type]
+
+    async def test_async_rejects_overlong_key_before_io(self):
+        with pytest.raises(ValueError, match="key too long"):
+            await aclient.acquire(None, None, "x" * 257, 1)  # type: ignore[arg-type]
+
+    async def test_async_rejects_negative_timeout_before_io(self):
+        with pytest.raises(ValueError, match="acquire_timeout_s"):
+            await aclient.acquire(None, None, "k", -1)  # type: ignore[arg-type]
+
+    async def test_async_rejects_zero_lease_before_io(self):
+        with pytest.raises(ValueError, match="lease_ttl_s"):
+            await aclient.acquire(None, None, "k", 1, lease_ttl_s=0)  # type: ignore[arg-type]
+
+    async def test_async_rejects_token_with_whitespace_before_io(self):
+        with pytest.raises(ValueError, match="token"):
+            await aclient.release(None, None, "k", "bad token")  # type: ignore[arg-type]
+
+    def test_sync_rejects_empty_key_before_io(self):
+        with pytest.raises(ValueError, match="key must not be empty"):
+            sclient.acquire(None, None, "", 1)  # type: ignore[arg-type]
+
+    def test_sync_rejects_negative_timeout_before_io(self):
+        with pytest.raises(ValueError, match="acquire_timeout_s"):
+            sclient.acquire(None, None, "k", -1)  # type: ignore[arg-type]
+
+    def test_sync_rejects_zero_lease_before_io(self):
+        with pytest.raises(ValueError, match="lease_ttl_s"):
+            sclient.acquire(None, None, "k", 1, lease_ttl_s=0)  # type: ignore[arg-type]
+
+    def test_sync_rejects_token_with_whitespace_before_io(self):
+        with pytest.raises(ValueError, match="token"):
+            sclient.release(None, None, "k", "bad token")  # type: ignore[arg-type]
+
+    def test_distributed_semaphore_limit_is_keyword_only(self):
+        async_params = inspect.signature(aclient.DistributedSemaphore).parameters
+        sync_params = inspect.signature(sclient.DistributedSemaphore).parameters
+        assert async_params["limit"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert sync_params["limit"].kind is inspect.Parameter.KEYWORD_ONLY
+
+        with pytest.raises(TypeError):
+            aclient.DistributedSemaphore("k", 2)
+        with pytest.raises(TypeError):
+            sclient.DistributedSemaphore("k", 2)
+
+    async def test_async_empty_auth_token_is_not_sent(self):
+        reader = asyncio.StreamReader()
+        writer = MagicMock(spec=asyncio.StreamWriter)
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        writer.close = MagicMock()
+        writer.wait_closed = AsyncMock()
+
+        async def fake_open_connection(*_args, **_kwargs):
+            return reader, writer
+
+        lock = _make_async_lock(auth_token="")
+        with patch(
+            "dflockd_client.client.asyncio.open_connection",
+            side_effect=fake_open_connection,
+        ):
+            try:
+                await lock._connect()
+                writer.write.assert_not_called()
+            finally:
+                await lock.aclose()
+
+    def test_sync_empty_auth_token_is_not_sent(self):
+        sock = MagicMock(spec=socket.socket)
+        sock.makefile.return_value = io.StringIO("")
+        lock = _make_sync_lock(auth_token="")
+
+        with patch(
+            "dflockd_client.sync_client.socket.create_connection",
+            return_value=sock,
+        ):
+            try:
+                lock._connect()
+                sock.sendall.assert_not_called()
+            finally:
+                lock.close()
+
+
+# ===========================================================================
 # Async protocol function error paths (mocked reader/writer, no server)
 # ===========================================================================
 
@@ -896,6 +992,11 @@ class TestAsyncProtocolErrors:
     async def test_acquire_bad_response(self):
         r, w = _async_rw(b"error something\n")
         with pytest.raises(RuntimeError, match="acquire failed"):
+            await aclient.acquire(r, w, "k", 5)
+
+    async def test_acquire_max_locks_status_is_typed(self):
+        r, w = _async_rw(b"error_max_locks\n")
+        with pytest.raises(MaxLocksError, match="acquire failed"):
             await aclient.acquire(r, w, "k", 5)
 
     async def test_acquire_short_ok(self):
@@ -952,6 +1053,11 @@ class TestAsyncProtocolErrors:
     async def test_wait_bad_response(self):
         r, w = _async_rw(b"error bad\n")
         with pytest.raises(RuntimeError, match="wait failed"):
+            await aclient.wait(r, w, "k", 5)
+
+    async def test_wait_not_queued_status_is_typed(self):
+        r, w = _async_rw(b"error_not_enqueued\n")
+        with pytest.raises(NotQueuedError, match="wait failed"):
             await aclient.wait(r, w, "k", 5)
 
     # --- release ---
@@ -1070,6 +1176,11 @@ class TestSyncProtocolErrors:
         with pytest.raises(RuntimeError, match="acquire failed"):
             sclient.acquire(s, r, "k", 5)  # type: ignore[arg-type]
 
+    def test_acquire_max_locks_status_is_typed(self):
+        s, r = _sync_rw("error_max_locks\n")
+        with pytest.raises(MaxLocksError, match="acquire failed"):
+            sclient.acquire(s, r, "k", 5)  # type: ignore[arg-type]
+
     def test_acquire_short_ok(self):
         s, r = _sync_rw("ok \n")
         with pytest.raises(RuntimeError, match="bad ok response"):
@@ -1124,6 +1235,11 @@ class TestSyncProtocolErrors:
     def test_wait_bad_response(self):
         s, r = _sync_rw("error bad\n")
         with pytest.raises(RuntimeError, match="wait failed"):
+            sclient.wait(s, r, "k", 5)  # type: ignore[arg-type]
+
+    def test_wait_not_queued_status_is_typed(self):
+        s, r = _sync_rw("error_not_enqueued\n")
+        with pytest.raises(NotQueuedError, match="wait failed"):
             sclient.wait(s, r, "k", 5)  # type: ignore[arg-type]
 
     # --- release ---

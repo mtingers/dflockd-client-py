@@ -1,7 +1,7 @@
 """Shared protocol helpers used by both async and sync clients."""
 
 import logging
-from typing import Any, NamedTuple, TypedDict
+from typing import Any, NamedTuple, NoReturn, TypedDict
 
 log = logging.getLogger("dflockd-client")
 
@@ -13,6 +13,138 @@ _DEFAULT_HEARTBEAT_INTERVAL_S = 15.0
 # itself; the slack just bounds the case where the server hangs but TCP
 # stays open. Matches the +30s used by sync_client.
 _IO_TIMEOUT_SLACK_S = 30
+_MAX_PROTOCOL_LINE_LEN = 256
+_MAX_PAYLOAD_LEN = 64 * 1024
+_MAX_PROTOCOL_SECONDS = 9_223_372_036
+
+
+class DflockdError(RuntimeError):
+    """Base class for protocol status errors returned by dflockd."""
+
+
+class AuthError(DflockdError):
+    """Authentication was rejected by the server."""
+
+
+class MaxLocksError(DflockdError):
+    """The server-side max-locks limit was reached."""
+
+
+class MaxWaitersError(DflockdError):
+    """The server-side max-waiters limit was reached."""
+
+
+class LimitMismatchError(DflockdError):
+    """A semaphore operation used a different limit for an existing key."""
+
+
+class NotQueuedError(DflockdError):
+    """Wait was called without a matching queued request."""
+
+
+class AlreadyQueuedError(DflockdError):
+    """The connection is already queued for the key."""
+
+
+class LeaseExpiredError(DflockdError):
+    """The queued or held lease expired on the server."""
+
+
+class DrainingError(DflockdError):
+    """The server is draining and rejected the operation."""
+
+
+_STATUS_ERRORS: dict[str, type[DflockdError]] = {
+    "error_auth": AuthError,
+    "error_max_locks": MaxLocksError,
+    "error_max_waiters": MaxWaitersError,
+    "error_limit_mismatch": LimitMismatchError,
+    "error_not_enqueued": NotQueuedError,
+    "error_already_enqueued": AlreadyQueuedError,
+    "error_lease_expired": LeaseExpiredError,
+    "error_draining": DrainingError,
+}
+
+
+def _byte_len(value: str) -> int:
+    return len(value.encode("utf-8"))
+
+
+def _check_no_newlines(name: str, value: str) -> None:
+    if "\n" in value or "\r" in value:
+        raise ValueError(f"{name} must not contain newlines")
+
+
+def _validate_protocol_line(
+    name: str, value: str, *, allow_empty: bool = True
+) -> None:
+    if not allow_empty and value == "":
+        raise ValueError(f"{name} must not be empty")
+    _check_no_newlines(name, value)
+    if _byte_len(value) > _MAX_PROTOCOL_LINE_LEN:
+        raise ValueError(
+            f"{name} too long (max {_MAX_PROTOCOL_LINE_LEN} bytes)"
+        )
+
+
+def _validate_key(name: str, value: str) -> None:
+    _validate_protocol_line(name, value, allow_empty=False)
+    if any(c in value for c in (" ", "\t", "\n", "\r")):
+        raise ValueError(f"{name} must not contain whitespace")
+
+
+def _validate_token(token: str) -> None:
+    _validate_protocol_line("token", token, allow_empty=False)
+    if any(c in token for c in (" ", "\t")):
+        raise ValueError("token must not contain whitespace")
+
+
+def _validate_timeout_s(name: str, value: int) -> None:
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0")
+    if value > _MAX_PROTOCOL_SECONDS:
+        raise ValueError(f"{name} too large (max {_MAX_PROTOCOL_SECONDS})")
+
+
+def _validate_lease_ttl_s(value: int | None) -> None:
+    if value is None:
+        return
+    if value <= 0:
+        raise ValueError("lease_ttl_s must be > 0")
+    if value > _MAX_PROTOCOL_SECONDS:
+        raise ValueError(f"lease_ttl_s too large (max {_MAX_PROTOCOL_SECONDS})")
+
+
+def _max_signal_payload_len(channel: str) -> int:
+    return _MAX_PAYLOAD_LEN - len("sig ") - _byte_len(channel) - len(" ")
+
+
+def _validate_signal_channel(channel: str) -> None:
+    _validate_key("channel", channel)
+    if "*" in channel or ">" in channel:
+        raise ValueError("channel must not contain wildcards (* or >)")
+
+
+def _validate_signal_payload(channel: str, payload: str) -> None:
+    _check_no_newlines("payload", payload)
+    if payload.strip() == "":
+        raise ValueError("payload must not be empty")
+    max_payload = _max_signal_payload_len(channel)
+    if max_payload < 0:
+        max_payload = 0
+    if _byte_len(payload) > max_payload:
+        raise ValueError(f"payload too large (max {max_payload} bytes)")
+
+
+def _validate_auth_token(token: str) -> None:
+    _check_no_newlines("auth token", token)
+    if _byte_len(token) > _MAX_PAYLOAD_LEN:
+        raise ValueError(f"auth token too long (max {_MAX_PAYLOAD_LEN} bytes)")
+
+
+def _raise_status_error(operation: str, resp: str) -> NoReturn:
+    exc_cls = _STATUS_ERRORS.get(resp, DflockdError)
+    raise exc_cls(f"{operation} failed: {resp!r}")
 
 
 def encode_lines(*lines: str) -> bytes:
