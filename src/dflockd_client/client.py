@@ -849,12 +849,16 @@ class SignalConn:
             write_committed = False
             try:
                 self._writer.write(encode_lines(cmd, key, arg))
-                await self._writer.drain()
-                # write_committed gates the post-drain teardown below: once
-                # data has been flushed, the server WILL send a response,
-                # and any subsequent failure leaves an orphan response in
-                # flight that would mis-route to the next caller's future.
+                # Set committed BEFORE drain: write() is synchronous and
+                # the OS may have already flushed the data to the server
+                # by the time drain() runs. If drain is cancelled, the
+                # server can still receive the command and send a
+                # response — a response that would mis-route to the next
+                # caller's future. Cancellation only fires at await
+                # points, so there's no opportunity to be cancelled
+                # between write() and this assignment.
                 write_committed = True
+                await self._writer.drain()
                 # Race the response future against the read_task: if the
                 # read loop exits between the early check above and the
                 # await (e.g. peer closed mid-write), neither the finally

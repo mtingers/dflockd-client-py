@@ -446,6 +446,49 @@ class TestAsyncSendCmdAfterReadLoopExit:
         with pytest.raises(ConnectionError, match="connection closed"):
             await asyncio.wait_for(sc._send_cmd("ping", "_", ""), timeout=2.0)
 
+    async def test_cancellation_during_drain_invalidates_connection(self):
+        """Earlier round of this fix only marked write_committed AFTER
+        drain returned. But write() is synchronous — by the time drain
+        runs, the OS may have already flushed the bytes. If cancellation
+        fires during drain, the server still receives the command and
+        sends a response. write_committed must be set BEFORE drain so
+        the cancellation handler tears down the writer and prevents
+        mis-routing.
+        """
+        sc = aclient.SignalConn()
+        reader = asyncio.StreamReader()
+        sc._reader = reader
+
+        drain_event = asyncio.Event()
+        closed = {"flag": False}
+
+        class _StubWriter:
+            def write(self, data: bytes) -> None:
+                pass
+
+            async def drain(self) -> None:
+                await drain_event.wait()
+
+            def close(self) -> None:
+                closed["flag"] = True
+                if not reader.at_eof():
+                    reader.feed_eof()
+
+        sc._writer = _StubWriter()  # type: ignore[assignment]
+        sc._read_task = asyncio.create_task(sc._read_loop())
+
+        cmd_a = asyncio.create_task(sc._send_cmd("listen", "x.>", ""))
+        await asyncio.sleep(0.01)  # ensure A is awaiting drain
+        cmd_a.cancel()
+        drain_event.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cmd_a
+
+        # Writer must have been closed by the cancellation handler.
+        assert closed["flag"], (
+            "writer was not closed; orphan response could mis-route"
+        )
+
     async def test_cancellation_post_drain_invalidates_connection(self):
         """If _send_cmd is cancelled after the request was flushed to the
         wire, the server's response is in-flight. Letting the next
