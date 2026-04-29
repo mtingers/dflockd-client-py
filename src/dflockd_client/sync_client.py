@@ -808,12 +808,16 @@ class SignalConn:
             pass
         finally:
             # Ensure the sentinel is delivered even if the queue is full
-            # so that ``for sig in sc:`` terminates cleanly.
+            # so that ``for sig in sc:`` terminates cleanly. If we have to
+            # evict the oldest signal to make room, count it as dropped —
+            # otherwise dropped_signals undercounts (the user never sees
+            # that signal).
             try:
                 self._sig_queue.put_nowait(None)
             except queue.Full:
                 try:
                     self._sig_queue.get_nowait()
+                    self._dropped += 1
                 except queue.Empty:
                     pass
                 try:

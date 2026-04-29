@@ -1,6 +1,7 @@
 """Tests for signal (pub/sub) functionality — async and sync clients."""
 
 import asyncio
+import contextlib
 import io
 import socket
 import threading
@@ -445,6 +446,47 @@ class TestAsyncSendCmdAfterReadLoopExit:
         with pytest.raises(ConnectionError, match="connection closed"):
             await asyncio.wait_for(sc._send_cmd("ping", "_", ""), timeout=2.0)
 
+    async def test_cancellation_post_drain_invalidates_connection(self):
+        """If _send_cmd is cancelled after the request was flushed to the
+        wire, the server's response is in-flight. Letting the next
+        _send_cmd reuse the same connection would route THIS response
+        to NEXT caller's future — silent off-by-one mis-routing for
+        every subsequent command. The fix tears down the transport so
+        the next caller surfaces ConnectionError and the user reconnects.
+        """
+        sc = aclient.SignalConn()
+        reader = asyncio.StreamReader()
+        sc._reader = reader
+
+        class _StubWriter:
+            def write(self, data: bytes) -> None:
+                pass
+
+            async def drain(self) -> None:
+                pass
+
+            def close(self) -> None:
+                # Closing the writer should also cause the read loop to
+                # exit — emulate by feeding EOF.
+                reader.feed_eof()
+
+        sc._writer = _StubWriter()  # type: ignore[assignment]
+        sc._read_task = asyncio.create_task(sc._read_loop())
+
+        cmd_a = asyncio.create_task(sc._send_cmd("listen", "x.>", ""))
+        await asyncio.sleep(0.01)
+        cmd_a.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cmd_a
+
+        # Give the read loop a tick to notice the EOF and exit.
+        await asyncio.sleep(0.05)
+
+        with pytest.raises(ConnectionError):
+            await asyncio.wait_for(
+                sc._send_cmd("signal", "y", "data"), timeout=1.0
+            )
+
     async def test_send_cmd_raises_when_read_task_dies_mid_call(self):
         """Race: read_task is alive when _send_cmd starts but exits after
         we've written the request and are awaiting the response. Without
@@ -479,14 +521,36 @@ class TestAsyncSendCmdAfterReadLoopExit:
 
 class TestAsyncDroppedSignals:
     async def test_dropped_increments_on_full_queue(self):
+        """One inbound overflow drop AND one EOF-eviction drop both count.
+        Pre-filling the queue full means the inbound 'sig overflow' line
+        gets dropped (count=1), and on EOF the sentinel insert evicts one
+        of the pre-loaded signals to make room (count=2). Both are real
+        signals the user will never see.
+        """
         sc = aclient.SignalConn()
         for i in range(64):
             sc._sig_queue.put_nowait(Signal(f"ch.{i}", str(i)))
         assert sc._sig_queue.full()
 
-        # Feed one more "sig ..." line; the read loop must drop and bump.
         reader = asyncio.StreamReader()
         reader.feed_data(b"sig overflow.channel payload\n")
+        reader.feed_eof()
+        sc._reader = reader
+
+        await sc._read_loop()
+
+        assert sc.dropped_signals == 2
+
+    async def test_dropped_counts_eof_eviction_only(self):
+        """If the queue is full at EOF but no inbound drops occurred,
+        the sentinel-eviction should still bump dropped_signals so the
+        user sees the lost signal in the metric.
+        """
+        sc = aclient.SignalConn()
+        for i in range(64):
+            sc._sig_queue.put_nowait(Signal(f"ch.{i}", str(i)))
+
+        reader = asyncio.StreamReader()
         reader.feed_eof()
         sc._reader = reader
 
@@ -508,12 +572,23 @@ class TestAsyncDroppedSignals:
 
 class TestSyncDroppedSignals:
     def test_dropped_increments_on_full_queue(self):
+        """Both inbound drop and EOF-eviction count. See async docstring."""
         sc = sclient.SignalConn()
         for i in range(64):
             sc._sig_queue.put_nowait(Signal(f"ch.{i}", str(i)))
         assert sc._sig_queue.full()
 
         sc._rfile = io.StringIO("sig overflow.channel payload\n")
+        sc._read_loop()
+
+        assert sc.dropped_signals == 2
+
+    def test_dropped_counts_eof_eviction_only(self):
+        sc = sclient.SignalConn()
+        for i in range(64):
+            sc._sig_queue.put_nowait(Signal(f"ch.{i}", str(i)))
+
+        sc._rfile = io.StringIO("")  # immediate EOF
         sc._read_loop()
 
         assert sc.dropped_signals == 1

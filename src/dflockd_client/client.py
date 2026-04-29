@@ -812,12 +812,16 @@ class SignalConn:
             if fut is not None and not fut.done():
                 fut.set_exception(ConnectionError("connection closed"))
             # Ensure the sentinel is delivered even if the queue is full
-            # so that ``async for sig in sc:`` terminates cleanly.
+            # so that ``async for sig in sc:`` terminates cleanly. If we
+            # have to evict the oldest signal to make room, count it as
+            # dropped — otherwise dropped_signals undercounts (the user
+            # never sees that signal).
             try:
                 self._sig_queue.put_nowait(None)
             except asyncio.QueueFull:
                 try:
                     self._sig_queue.get_nowait()
+                    self._dropped += 1
                 except asyncio.QueueEmpty:
                     pass
                 with contextlib.suppress(asyncio.QueueFull):
@@ -842,9 +846,15 @@ class SignalConn:
             # clears _resp_future. Otherwise the orphaned future captures the
             # next caller's response and mis-routes it.
             self._resp_future = loop.create_future()
+            write_committed = False
             try:
                 self._writer.write(encode_lines(cmd, key, arg))
                 await self._writer.drain()
+                # write_committed gates the post-drain teardown below: once
+                # data has been flushed, the server WILL send a response,
+                # and any subsequent failure leaves an orphan response in
+                # flight that would mis-route to the next caller's future.
+                write_committed = True
                 # Race the response future against the read_task: if the
                 # read loop exits between the early check above and the
                 # await (e.g. peer closed mid-write), neither the finally
@@ -859,6 +869,22 @@ class SignalConn:
                     return self._resp_future.result()
                 # read_task completed first — connection is gone.
                 raise ConnectionError("connection closed")
+            except BaseException:
+                # If we'd already flushed the request, the server's
+                # response is in flight. Letting subsequent commands
+                # proceed on the same connection would route THIS
+                # response to the NEXT _send_cmd's future — silent
+                # off-by-one mis-routing. Tear down the transport so
+                # the next caller surfaces ConnectionError and the
+                # user reconnects.
+                if write_committed:
+                    writer = self._writer
+                    if writer is not None:
+                        try:
+                            writer.close()
+                        except Exception:
+                            pass
+                raise
             finally:
                 self._resp_future = None
 
