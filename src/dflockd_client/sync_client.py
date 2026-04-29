@@ -783,8 +783,15 @@ class SignalConn:
     def _read_loop(self) -> None:
         try:
             while True:
-                assert self._rfile is not None
-                line = _readline(self._rfile)
+                # Capture _rfile locally and return cleanly if close()
+                # already nullified it. The previous `assert` could fire
+                # AssertionError between iterations if close() ran on
+                # the main thread, crashing the read_thread loudly
+                # because AssertionError isn't in the except list.
+                rfile = self._rfile
+                if rfile is None:
+                    return
+                line = _readline(rfile)
                 if line.startswith("sig "):
                     rest = line[4:]
                     idx = rest.find(" ")

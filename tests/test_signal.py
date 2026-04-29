@@ -628,6 +628,77 @@ class TestAsyncDroppedSignals:
         assert sc.dropped_signals == 0
 
 
+class TestSyncReadLoopRfileRace:
+    def test_read_loop_survives_rfile_nulled_between_iterations(self):
+        """The previous `assert self._rfile is not None` at the top of
+        every loop iteration could fire AssertionError if close() ran
+        on the main thread between iterations and nullified _rfile.
+        AssertionError wasn't in the except list, so the read_thread
+        crashed loudly. The fix captures _rfile locally and returns
+        cleanly when it goes None, mirroring the sentinel-insert path
+        that's used for any other error.
+        """
+        sc = sclient.SignalConn()
+
+        class _RaceyRfile:
+            def __init__(self, conn):
+                self.conn = conn
+                self.first = True
+
+            def readline(self, size=-1):
+                if self.first:
+                    self.first = False
+                    # Simulate close() racing with the loop.
+                    self.conn._rfile = None
+                    return "sig overflow.channel payload\n"
+                return ""
+
+        sc._rfile = _RaceyRfile(sc)  # type: ignore[assignment]
+
+        exc = {"e": None}
+
+        def run():
+            try:
+                sc._read_loop()
+            except BaseException as e:
+                exc["e"] = e
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        t.join(timeout=2)
+
+        assert not t.is_alive(), "read_loop did not exit"
+        assert exc["e"] is None, (
+            f"read_loop crashed with {type(exc['e']).__name__}: {exc['e']}"
+        )
+
+
+class TestAsyncReadLoopExceptionHandling:
+    async def test_read_loop_survives_generic_oserror(self):
+        """A generic OSError from readline (e.g. SSL error, transport
+        reset surfacing as non-ConnectionError, EBADF on a cancelled
+        loop) must be caught so the read_loop exits cleanly with the
+        sentinel inserted into the signal queue. Sync's read_loop has
+        always handled OSError; async previously caught only
+        ConnectionError + ValueError + RuntimeError + CancelledError
+        and would crash on a bare OSError.
+        """
+        sc = aclient.SignalConn()
+
+        class _RaisingReader:
+            async def readline(self):
+                raise OSError("simulated low-level IO error")
+
+        sc._reader = _RaisingReader()  # type: ignore[assignment]
+
+        # Should return without raising.
+        await sc._read_loop()
+
+        # Sentinel must have been inserted so the iterator terminates.
+        item = await sc._sig_queue.get()
+        assert item is None
+
+
 class TestSyncDroppedSignals:
     def test_dropped_increments_on_full_queue(self):
         """Both inbound drop and EOF-eviction count. See async docstring."""
