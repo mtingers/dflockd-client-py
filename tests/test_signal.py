@@ -267,6 +267,21 @@ class TestAsyncHeartbeatLoop:
         sc._send_cmd = mock_send_cmd  # type: ignore[assignment]
         await sc._heartbeat_loop()  # should return, not raise
 
+    async def test_heartbeat_stops_on_generic_oserror(self):
+        """Generic OSError (e.g. EBADF, transport reset that surfaces
+        as a non-ConnectionError) must terminate the heartbeat instead
+        of escaping as an unhandled task exception. Sync's heartbeat
+        already handles this; async previously caught only
+        (ConnectionError, RuntimeError) and silently crashed.
+        """
+        sc = aclient.SignalConn(heartbeat_interval_s=0.05)
+
+        async def mock_send_cmd(cmd, key, arg):
+            raise OSError("generic IO error")
+
+        sc._send_cmd = mock_send_cmd  # type: ignore[assignment]
+        await sc._heartbeat_loop()  # should return cleanly
+
     async def test_heartbeat_not_started_when_zero(self):
         sc = aclient.SignalConn(
             server=("127.0.0.1", 1),

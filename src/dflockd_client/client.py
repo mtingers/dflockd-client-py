@@ -777,7 +777,14 @@ class SignalConn:
                 await asyncio.sleep(self.heartbeat_interval_s)
                 try:
                     await self._send_cmd("ping", "_", "")
-                except (ConnectionError, RuntimeError):
+                except (ConnectionError, RuntimeError, OSError):
+                    # OSError covers BrokenPipeError, ConnectionResetError,
+                    # TimeoutError (3.11+), SSL errors, and the generic
+                    # write/drain failures _send_cmd surfaces. Without
+                    # OSError, those would crash the heartbeat task
+                    # silently (asyncio "Task exception was never
+                    # retrieved") — sync's _heartbeat_loop already
+                    # catches OSError, this brings async to parity.
                     return
         except asyncio.CancelledError:
             return
@@ -805,7 +812,12 @@ class SignalConn:
                     fut = self._resp_future
                     if fut is not None and not fut.done():
                         fut.set_result(line)
-        except (ConnectionError, asyncio.CancelledError, RuntimeError, ValueError):
+        except (OSError, asyncio.CancelledError, RuntimeError, ValueError):
+            # OSError (parent of ConnectionError) covers TLS-level
+            # errors, transport resets, and the broader set of network
+            # IO failures sync's _read_loop already handles. Without it,
+            # an SSL handshake error or unusual transport failure would
+            # escape to asyncio's task exception logger.
             pass
         finally:
             fut = self._resp_future
