@@ -8,3 +8,14 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Test/coverage artifacts
+.coverage
+.pytest_cache/
+.ruff_cache/
+
+# mkdocs build output
+site/
+
+# macOS
+.DS_Store

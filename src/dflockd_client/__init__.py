@@ -1,6 +1,28 @@
+"""dflockd-client: Python client for the dflockd distributed FIFO lock server.
+
+Two parallel APIs are exposed:
+
+  - **Sync** — :class:`SyncDistributedLock` and :class:`SyncDistributedSemaphore`,
+    plus the underlying :class:`SyncConn` and low-level functions in
+    :mod:`dflockd_client._sync`.
+  - **Async** — :class:`AsyncDistributedLock` and :class:`AsyncDistributedSemaphore`,
+    plus :class:`AsyncConn` in :mod:`dflockd_client._async`.
+
+Both speak the same wire protocol against the same servers; choose by
+the runtime style of the caller.
+"""
+
 from importlib.metadata import PackageNotFoundError, version
 
-from ._common import (
+from . import _async, _sync
+from ._async import AsyncConn
+from ._async import DistributedLock as AsyncDistributedLock
+from ._async import DistributedSemaphore as AsyncDistributedSemaphore
+from ._protocol import StatsResult
+from ._sync import DistributedLock as SyncDistributedLock
+from ._sync import DistributedSemaphore as SyncDistributedSemaphore
+from ._sync import SyncConn
+from .errors import (
     AlreadyQueuedError,
     AuthError,
     DflockdError,
@@ -11,16 +33,8 @@ from ._common import (
     MaxLocksError,
     MaxWaitersError,
     NotQueuedError,
-    Signal,
-    StatsResult,
 )
-from .client import DistributedLock as AsyncDistributedLock
-from .client import DistributedSemaphore as AsyncDistributedSemaphore
 from .sharding import DEFAULT_SERVERS, ShardingStrategy, stable_hash_shard
-from .sync_client import DistributedLock as SyncDistributedLock
-from .sync_client import DistributedSemaphore as SyncDistributedSemaphore
-from .client import SignalConn as AsyncSignalConn
-from .sync_client import SignalConn as SyncSignalConn
 
 try:
     __version__ = version("dflockd-client")
@@ -43,11 +57,12 @@ __all__ = [
     "DEFAULT_SERVERS",
     "ShardingStrategy",
     "stable_hash_shard",
+    "AsyncConn",
     "AsyncDistributedLock",
     "AsyncDistributedSemaphore",
+    "SyncConn",
     "SyncDistributedLock",
     "SyncDistributedSemaphore",
-    "Signal",
-    "AsyncSignalConn",
-    "SyncSignalConn",
+    "_async",
+    "_sync",
 ]

@@ -1,27 +1,33 @@
 # dflockd-client
 
-A Python client library for [dflockd](https://github.com/mtingers/dflockd) — a lightweight distributed lock server with FIFO ordering, automatic lease expiry, and background renewal.
+A Python client for [dflockd](https://github.com/mtingers/dflockd) — a
+distributed FIFO lock and counting-semaphore server.
 
-[Documentation](https://mtingers.github.io/dflockd-client-py/) · [Changelog](CHANGELOG.md)
+[Documentation](https://mtingers.github.io/dflockd-client-py/) ·
+[Changelog](CHANGELOG.md)
 
 ## Features
 
-- Async and sync clients with automatic background lease renewal
+- Sync and async clients — pick the one that matches your runtime
 - Distributed locks and counting semaphores with FIFO ordering
-- Signals (pub/sub) with NATS-style wildcards and queue groups
-- Two-phase acquisition (enqueue + wait)
-- Multi-server sharding with consistent hashing
-- TLS and token-based authentication
-- Zero dependencies — pure Python 3.12+
+- Single-phase `acquire` and two-phase `enqueue` + `wait`
+- Background lease renewal — call `acquire`, hold for as long as you need
+- Multi-server sharding (deterministic CRC-32; matches the Go and TypeScript clients)
+- TLS and shared-secret authentication
+- Zero runtime dependencies; Python 3.12+
 
-## Installation
+## Install
 
 ```bash
 pip install dflockd-client
-# or: uv add dflockd-client
+# or
+uv add dflockd-client
 ```
 
 ## Quick start
+
+A running [dflockd](https://github.com/mtingers/dflockd) server on
+`127.0.0.1:6388` is the only prerequisite.
 
 ### Lock
 
@@ -29,11 +35,9 @@ pip install dflockd-client
 from dflockd_client import SyncDistributedLock
 
 with SyncDistributedLock("my-key") as lock:
+    # critical section — lease auto-renews in a daemon thread
     print(f"acquired: {lock.token}")
-    # critical section — lease auto-renews in background
 ```
-
-Async:
 
 ```python
 import asyncio
@@ -48,44 +52,41 @@ asyncio.run(main())
 
 ### Semaphore
 
+Up to `limit` concurrent holders on the same key:
+
 ```python
 from dflockd_client import SyncDistributedSemaphore
 
 with SyncDistributedSemaphore("pool", limit=3) as sem:
-    print(f"acquired: {sem.token}")
-    # up to 3 concurrent holders
-```
-
-### Signals
-
-```python
-from dflockd_client import SyncSignalConn
-
-with SyncSignalConn(server=("127.0.0.1", 6388)) as sc:
-    sc.listen("events.>")
-    for sig in sc:
-        print(f"{sig.channel}: {sig.payload}")
-        break
+    print(f"slot: {sem.token}")
 ```
 
 ### Authentication and TLS
 
 ```python
 import ssl
+from dflockd_client import SyncDistributedLock
 
-ctx = ssl.create_default_context()
-
-with SyncDistributedLock("my-key", auth_token="secret", ssl_context=ctx) as lock:
+with SyncDistributedLock(
+    "my-key",
+    auth_token="shared-secret",
+    ssl_context=ssl.create_default_context(),
+) as lock:
     ...
 ```
 
 ### Multi-server sharding
 
 ```python
-servers = [("server1", 6388), ("server2", 6388), ("server3", 6388)]
+from dflockd_client import SyncDistributedLock
 
-with SyncDistributedLock("my-key", servers=servers) as lock:
-    ...  # key deterministically routes to the same server
+with SyncDistributedLock(
+    "my-key",
+    servers=[("a", 6388), ("b", 6388), ("c", 6388)],
+) as lock:
+    # the same key always routes to the same server
+    ...
 ```
 
-For detailed guides, API reference, and more examples, see the [documentation](https://mtingers.github.io/dflockd-client-py/).
+See the [docs](https://mtingers.github.io/dflockd-client-py/) for two-phase
+acquisition, exception handling, low-level transport, and more.

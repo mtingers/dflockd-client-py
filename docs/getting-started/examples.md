@@ -1,431 +1,276 @@
 # Examples
 
+Every example assumes a running dflockd server on `127.0.0.1:6388`. Adjust
+`servers=` for a different address.
+
 ## Hold a lock with auto-renewal
 
-Acquire a lock, hold it for an extended period while the client automatically renews the lease in the background:
-
-=== "Async"
-
-    ```python
-    import asyncio
-    from dflockd_client.client import DistributedLock
-
-    async def main():
-        async with DistributedLock("foo", acquire_timeout_s=10, lease_ttl_s=20) as lock:
-            print(f"acquired key={lock.key} token={lock.token} lease={lock.lease}")
-            await asyncio.sleep(45)  # lease renews automatically
-            print("done critical section")
-
-    asyncio.run(main())
-    ```
+The lease renews in the background as long as the lock is held; the lock
+is released when the `with` block exits.
 
 === "Sync"
 
     ```python
     import time
-    from dflockd_client.sync_client import DistributedLock
+    from dflockd_client import SyncDistributedLock
 
-    with DistributedLock("foo", acquire_timeout_s=10, lease_ttl_s=20) as lock:
+    with SyncDistributedLock("foo", acquire_timeout_s=10, lease_ttl_s=20) as lock:
         print(f"acquired key={lock.key} token={lock.token} lease={lock.lease}")
         time.sleep(45)  # lease renews automatically
-        print("done critical section")
     ```
-
-## FIFO lock ordering
-
-Multiple workers competing for the same lock are granted access in FIFO order:
 
 === "Async"
 
     ```python
     import asyncio
-    from dflockd_client.client import DistributedLock
-
-    async def worker(worker_id: int):
-        async with DistributedLock("foo", acquire_timeout_s=12) as lock:
-            print(f"acquired  ({worker_id}): {lock.token}")
-            await asyncio.sleep(1)
-            print(f"released  ({worker_id}): {lock.token}")
+    from dflockd_client import AsyncDistributedLock
 
     async def main():
-        tasks = [worker(i) for i in range(9)]
-        await asyncio.gather(*tasks)
+        async with AsyncDistributedLock("foo", acquire_timeout_s=10, lease_ttl_s=20) as lock:
+            print(f"acquired key={lock.key} token={lock.token} lease={lock.lease}")
+            await asyncio.sleep(45)  # lease renews automatically
 
     asyncio.run(main())
     ```
+
+## FIFO ordering
+
+Multiple workers competing for the same key are granted in queue order.
 
 === "Sync"
 
     ```python
     import threading
     import time
-    from dflockd_client.sync_client import DistributedLock
+    from dflockd_client import SyncDistributedLock
 
-    def worker(worker_id: int):
-        with DistributedLock("foo", acquire_timeout_s=30) as lock:
-            print(f"acquired  ({worker_id}): {lock.token}")
-            time.sleep(1)
-            print(f"released  ({worker_id}): {lock.token}")
+    def worker(n: int):
+        with SyncDistributedLock("foo", acquire_timeout_s=30) as lock:
+            print(f"acquired ({n}): {lock.token}")
+            time.sleep(0.5)
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(9)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    for t in threads: t.start()
+    for t in threads: t.join()
     ```
-
-## Two-phase lock acquisition
-
-Split enqueue and wait to notify an external system between joining the queue and blocking:
 
 === "Async"
 
     ```python
     import asyncio
-    from dflockd_client.client import DistributedLock
+    from dflockd_client import AsyncDistributedLock
+
+    async def worker(n: int):
+        async with AsyncDistributedLock("foo", acquire_timeout_s=30) as lock:
+            print(f"acquired ({n}): {lock.token}")
+            await asyncio.sleep(0.5)
 
     async def main():
-        lock = DistributedLock("my-key", acquire_timeout_s=10, lease_ttl_s=20)
-
-        status = await lock.enqueue()       # "acquired" or "queued"
-        print(f"enqueue: {status}")
-
-        await notify_external_system()      # your application logic
-
-        if await lock.wait(timeout_s=10):   # blocks until granted
-            try:
-                print(f"lock held: {lock.token}")
-                await asyncio.sleep(1)
-            finally:
-                await lock.release()
+        await asyncio.gather(*(worker(i) for i in range(9)))
 
     asyncio.run(main())
     ```
 
+## Two-phase acquisition
+
+Split queue-join from blocking so you can run application logic in
+between (e.g. record a telemetry event, notify another system).
+
 === "Sync"
 
     ```python
-    from dflockd_client.sync_client import DistributedLock
+    from dflockd_client import SyncDistributedLock
 
-    lock = DistributedLock("my-key", acquire_timeout_s=10, lease_ttl_s=20)
-
+    lock = SyncDistributedLock("my-key", acquire_timeout_s=10, lease_ttl_s=20)
     status = lock.enqueue()           # "acquired" or "queued"
-    print(f"enqueue: {status}")
-
-    notify_external_system()          # your application logic
+    notify_external_system(status)    # your logic here
 
     if lock.wait(timeout_s=10):       # blocks until granted
         try:
-            print(f"lock held: {lock.token}")
+            ...
         finally:
             lock.release()
     ```
 
-If the lock is free at enqueue time, it is acquired immediately (fast path) and `wait()` returns `True` without blocking. The lease auto-renews in the background from the moment of acquisition.
-
-## Semaphore — bounded concurrency
-
-Use `DistributedSemaphore` to allow up to N concurrent holders on the same key:
-
 === "Async"
 
     ```python
-    import asyncio
-    from dflockd_client.client import DistributedSemaphore
+    from dflockd_client import AsyncDistributedLock
 
-    async def worker(worker_id: int):
-        async with DistributedSemaphore("pool", limit=3, acquire_timeout_s=30) as sem:
-            print(f"acquired  ({worker_id}): {sem.token}")
-            await asyncio.sleep(1)
-            print(f"released  ({worker_id}): {sem.token}")
+    lock = AsyncDistributedLock("my-key", acquire_timeout_s=10, lease_ttl_s=20)
+    status = await lock.enqueue()
+    await notify_external_system(status)
 
-    async def main():
-        tasks = [worker(i) for i in range(9)]
-        await asyncio.gather(*tasks)
-
-    asyncio.run(main())
+    if await lock.wait(timeout_s=10):
+        try:
+            ...
+        finally:
+            await lock.release()
     ```
+
+If the lock is free at `enqueue()` time it returns `"acquired"` (fast
+path) and the lease starts renewing immediately; `wait()` then returns
+`True` without doing any I/O. Otherwise it returns `"queued"` and `wait()`
+blocks server-side up to the timeout.
+
+## Bounded concurrency with a semaphore
+
+Up to `limit` holders run concurrently; the rest queue in FIFO order.
 
 === "Sync"
 
     ```python
     import threading
     import time
-    from dflockd_client.sync_client import DistributedSemaphore
+    from dflockd_client import SyncDistributedSemaphore
 
-    def worker(worker_id: int):
-        with DistributedSemaphore("pool", limit=3, acquire_timeout_s=30) as sem:
-            print(f"acquired  ({worker_id}): {sem.token}")
+    def worker(n: int):
+        with SyncDistributedSemaphore("pool", limit=3, acquire_timeout_s=30) as sem:
+            print(f"acquired ({n}): {sem.token}")
             time.sleep(1)
-            print(f"released  ({worker_id}): {sem.token}")
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(9)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    for t in threads: t.start()
+    for t in threads: t.join()
     ```
-
-Up to 3 workers run concurrently; the remaining workers wait in FIFO order for a slot to open.
-
-## Two-phase semaphore acquisition
-
-Split enqueue and wait for semaphores, just like locks:
 
 === "Async"
 
     ```python
     import asyncio
-    from dflockd_client.client import DistributedSemaphore
+    from dflockd_client import AsyncDistributedSemaphore
+
+    async def worker(n: int):
+        async with AsyncDistributedSemaphore("pool", limit=3, acquire_timeout_s=30) as sem:
+            print(f"acquired ({n}): {sem.token}")
+            await asyncio.sleep(1)
 
     async def main():
-        sem = DistributedSemaphore("my-key", limit=3, acquire_timeout_s=10, lease_ttl_s=20)
-
-        status = await sem.enqueue()       # "acquired" or "queued"
-        print(f"enqueue: {status}")
-
-        await notify_external_system()     # your application logic
-
-        if await sem.wait(timeout_s=10):   # blocks until granted
-            try:
-                print(f"semaphore held: {sem.token}")
-                await asyncio.sleep(1)
-            finally:
-                await sem.release()
+        await asyncio.gather(*(worker(i) for i in range(9)))
 
     asyncio.run(main())
     ```
 
-=== "Sync"
+## Handling specific errors
 
-    ```python
-    from dflockd_client.sync_client import DistributedSemaphore
+Every server-side error maps to a sentinel exception so callers can
+branch with `isinstance` instead of parsing strings.
 
-    sem = DistributedSemaphore("my-key", limit=3, acquire_timeout_s=10, lease_ttl_s=20)
+```python
+from dflockd_client import (
+    AsyncDistributedLock,
+    DflockdTimeoutError,
+    MaxLocksError,
+    DrainingError,
+)
 
-    status = sem.enqueue()           # "acquired" or "queued"
-    print(f"enqueue: {status}")
+lock = AsyncDistributedLock("my-key")
+try:
+    if not await lock.acquire():
+        # Server-side timeout — no slot opened in acquire_timeout_s
+        return
+    ...
+except MaxLocksError:
+    ...  # cluster-wide unique-key cap reached
+except DrainingError:
+    ...  # server is shutting down
+except PermissionError:
+    ...  # auth_token rejected
+finally:
+    await lock.release()
+```
 
-    notify_external_system()         # your application logic
-
-    if sem.wait(timeout_s=10):       # blocks until granted
-        try:
-            print(f"semaphore held: {sem.token}")
-        finally:
-            sem.release()
-    ```
-
-## Server stats
-
-Query the server for its current state — connections, held locks, and active semaphores:
-
-=== "Async"
-
-    ```python
-    import asyncio
-    from dflockd_client.client import stats
-
-    async def main():
-        reader, writer = await asyncio.open_connection("127.0.0.1", 6388)
-        result = await stats(reader, writer)
-        print(f"connections: {result['connections']}")
-        print(f"locks: {result['locks']}")
-        print(f"semaphores: {result['semaphores']}")
-        writer.close()
-        await writer.wait_closed()
-
-    asyncio.run(main())
-    ```
-
-=== "Sync"
-
-    ```python
-    import socket
-    from dflockd_client.sync_client import stats
-
-    sock = socket.create_connection(("127.0.0.1", 6388))
-    rfile = sock.makefile("r", encoding="utf-8")
-    result = stats(sock, rfile)
-    print(f"connections: {result['connections']}")
-    print(f"locks: {result['locks']}")
-    print(f"semaphores: {result['semaphores']}")
-    rfile.close()
-    sock.close()
-    ```
+`DflockdTimeoutError` is a subclass of `TimeoutError`, so the standard
+`except TimeoutError` works too — but `lock.acquire()` returns `False`
+on server-side timeout, so most callers don't need to catch it.
 
 ## Authentication
 
 Connect to a dflockd server started with `--auth-token`:
 
-=== "Async"
-
-    ```python
-    import asyncio
-    from dflockd_client.client import DistributedLock
-
-    async def main():
-        async with DistributedLock("my-key", auth_token="mysecret") as lock:
-            print(f"token={lock.token} lease={lock.lease}")
-
-    asyncio.run(main())
-    ```
-
 === "Sync"
 
     ```python
-    from dflockd_client.sync_client import DistributedLock
+    from dflockd_client import SyncDistributedLock
 
-    with DistributedLock("my-key", auth_token="mysecret") as lock:
-        print(f"token={lock.token} lease={lock.lease}")
+    with SyncDistributedLock("my-key", auth_token="shared-secret") as lock:
+        ...
     ```
-
-The same `auth_token` parameter works on `DistributedSemaphore`. A `PermissionError` is raised if the token is wrong.
-
-## TLS connection
-
-Connect to a TLS-enabled dflockd server using an `ssl.SSLContext`:
 
 === "Async"
 
     ```python
-    import asyncio
-    import ssl
-    from dflockd_client.client import DistributedLock
+    from dflockd_client import AsyncDistributedLock
 
-    async def main():
-        ctx = ssl.create_default_context()  # uses system CA bundle
-        # or: ctx = ssl.create_default_context(cafile="/path/to/ca.pem")
-
-        async with DistributedLock("my-key", ssl_context=ctx) as lock:
-            print(f"token={lock.token} lease={lock.lease}")
-
-    asyncio.run(main())
+    async with AsyncDistributedLock("my-key", auth_token="shared-secret") as lock:
+        ...
     ```
+
+A wrong or missing token surfaces as `PermissionError`.
+
+## TLS
+
+Pass any `ssl.SSLContext` — the same one you'd use with `socket` or
+`asyncio` directly.
 
 === "Sync"
 
     ```python
     import ssl
-    from dflockd_client.sync_client import DistributedLock
+    from dflockd_client import SyncDistributedLock
 
     ctx = ssl.create_default_context()  # uses system CA bundle
-    # or: ctx = ssl.create_default_context(cafile="/path/to/ca.pem")
+    # or: ssl.create_default_context(cafile="/path/to/ca.pem")
 
-    with DistributedLock("my-key", ssl_context=ctx) as lock:
-        print(f"token={lock.token} lease={lock.lease}")
+    with SyncDistributedLock("my-key", ssl_context=ctx) as lock:
+        ...
     ```
-
-The same `ssl_context` parameter works on `DistributedSemaphore`.
-
-## Signals — pub/sub messaging
-
-Subscribe to channels with wildcard patterns and receive signals in real time:
 
 === "Async"
 
     ```python
-    import asyncio
-    from dflockd_client.client import SignalConn
+    import ssl
+    from dflockd_client import AsyncDistributedLock
 
-    async def main():
-        async with SignalConn(server=("127.0.0.1", 6388)) as listener:
-            await listener.listen("events.>")
+    ctx = ssl.create_default_context()
 
-            # Emit from a separate connection
-            async with SignalConn(server=("127.0.0.1", 6388)) as emitter:
-                n = await emitter.emit("events.user.login", "alice")
-                print(f"delivered to {n} listener(s)")
-
-            async for sig in listener:
-                print(f"{sig.channel}: {sig.payload}")
-                break
-
-    asyncio.run(main())
-    ```
-
-=== "Sync"
-
-    ```python
-    from dflockd_client.sync_client import SignalConn
-
-    with SignalConn(server=("127.0.0.1", 6388)) as listener:
-        listener.listen("events.>")
-
-        with SignalConn(server=("127.0.0.1", 6388)) as emitter:
-            n = emitter.emit("events.user.login", "alice")
-            print(f"delivered to {n} listener(s)")
-
-        for sig in listener:
-            print(f"{sig.channel}: {sig.payload}")
-            break
-    ```
-
-## Signal queue groups
-
-Load-balance signals across multiple consumers using queue groups. Within a group, each signal is delivered to exactly one member via round-robin:
-
-=== "Async"
-
-    ```python
-    import asyncio
-    from dflockd_client.client import SignalConn
-
-    async def worker(name: str, host: str, port: int):
-        async with SignalConn(server=(host, port)) as sc:
-            await sc.listen("jobs.>", group="workers")
-            async for sig in sc:
-                print(f"{name} got: {sig.channel} {sig.payload}")
-
-    async def main():
-        tasks = [worker(f"w{i}", "127.0.0.1", 6388) for i in range(3)]
-        await asyncio.gather(*tasks)
-
-    asyncio.run(main())
-    ```
-
-=== "Sync"
-
-    ```python
-    import threading
-    from dflockd_client.sync_client import SignalConn
-
-    def worker(name: str, host: str, port: int):
-        with SignalConn(server=(host, port)) as sc:
-            sc.listen("jobs.>", group="workers")
-            for sig in sc:
-                print(f"{name} got: {sig.channel} {sig.payload}")
-
-    threads = [threading.Thread(target=worker, args=(f"w{i}", "127.0.0.1", 6388)) for i in range(3)]
-    for t in threads:
-        t.start()
+    async with AsyncDistributedLock("my-key", ssl_context=ctx) as lock:
+        ...
     ```
 
 ## Multi-server sharding
 
-Distribute keys across multiple dflockd instances. Each key deterministically routes to the same server:
+Each key deterministically routes to a single server (CRC-32 of the key).
 
 ```python
-from dflockd_client.sync_client import DistributedLock
+from dflockd_client import SyncDistributedLock
 
-servers = [("server1", 6388), ("server2", 6388), ("server3", 6388)]
+servers = [("a", 6388), ("b", 6388), ("c", 6388)]
 
-with DistributedLock("my-key", servers=servers) as lock:
-    print(f"token={lock.token} lease={lock.lease}")
+with SyncDistributedLock("user:42:profile", servers=servers) as lock:
+    # always lands on the same server for "user:42:profile"
+    ...
 ```
 
-## Custom sharding strategy
+The default strategy matches the Go and TypeScript clients — a
+heterogeneous fleet picks the same server for any given key.
 
-Override the default CRC-32 sharding with your own logic:
+## Server stats
 
 ```python
-from dflockd_client.sync_client import DistributedLock
+from dflockd_client import SyncConn
+from dflockd_client._sync import stats
+import socket
 
-def my_strategy(key: str, num_servers: int) -> int:
-    """Route all keys to the first server."""
-    return 0
-
-servers = [("server1", 6388), ("server2", 6388)]
-
-with DistributedLock("my-key", servers=servers, sharding_strategy=my_strategy) as lock:
-    print(f"token={lock.token}")
+sock = socket.create_connection(("127.0.0.1", 6388))
+conn = SyncConn(sock)
+try:
+    result = stats(conn)
+    print(result["connections"])
+    print(result["locks"])
+finally:
+    conn.close()
 ```
+
+`result` is a [`StatsResult`](../api/python.md#statsresult) TypedDict with
+`connections`, `locks`, `semaphores`, `idle_locks`, and `idle_semaphores`.

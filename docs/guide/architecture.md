@@ -1,102 +1,152 @@
 # Architecture
 
-## Overview
-
-The dflockd-client library provides async and sync Python clients for [dflockd](https://github.com/mtingers/dflockd), a distributed lock and semaphore server. Both clients communicate with the server over TCP using a line-based UTF-8 protocol.
+The client is organised in three layers, built around the line-based
+TCP protocol described in the [dflockd
+docs](https://github.com/mtingers/dflockd):
 
 ```
-┌─────────────────────────────────┐
-│        Your application         │
-│                                 │
-│  ┌───────────┐  ┌───────────┐  │
-│  │  Async    │  │  Sync     │  │
-│  │  Client   │  │  Client   │  │
-│  │  +Signals │  │  +Signals │  │
-│  └─────┬─────┘  └─────┬─────┘  │
-│        │              │         │
-│  ┌─────┴──────────────┴─────┐  │
-│  │     Sharding layer       │  │
-│  └─────┬──────────────┬─────┘  │
-└────────┼──────────────┼────────┘
-         │   TCP        │   TCP
-    ┌────▼────┐    ┌────▼────┐
-    │ dflockd │    │ dflockd │
-    │ server  │    │ server  │
-    └─────────┘    └─────────┘
+┌──────────────────────────────────────┐
+│  High-level: DistributedLock,        │  acquire() / release() /
+│              DistributedSemaphore    │  enqueue() / wait()
+│                                      │  + background lease renewal
+├──────────────────────────────────────┤
+│  Transport: SyncConn / AsyncConn     │  conn.command(cmd, key, arg)
+├──────────────────────────────────────┤
+│  Wire: _protocol module              │  encode lines, parse responses
+└──────────────────────────────────────┘
 ```
 
-## Client lifecycle
+Each layer is independently usable. Tests cover the wire layer with no
+sockets, the transport layer with a fake `Conn`, and the high-level
+types against a running server.
 
-### Connection
+## Wire protocol layer (`_protocol`)
 
-Both `DistributedLock` and `DistributedSemaphore` extend shared base classes (`_AsyncBase` / `_SyncBase`) that handle connection management, renewal, and cleanup.
+Pure functions. No sockets, no asyncio. Everything in this layer maps
+bytes ↔ Python types:
 
-When `acquire()` or `enqueue()` is called, the client:
+- **Validators** — reject keys, tokens, timeouts, and limits that would
+  desynchronise the server's framing.
+- **Encoders** — `encode_lines("l", "k", "5") → b"l\\nk\\n5\\n"`,
+  plus `make_*_arg` helpers that compose validate + build per command.
+- **Decoders** — `parse_grant_response("ok abc 30") → ("abc", 30)`,
+  `parse_enqueue_response("queued") → ("queued", None, None)`. Each
+  decoder maps known wire codes to the matching sentinel exception.
 
-1. Selects a server using the sharding strategy (based on the key).
-2. Opens a TCP connection to that server.
-3. Sends the lock or semaphore request over the wire.
+Status codes from the server map to specific exception classes:
 
-### Lock acquisition
+| Wire code                  | Exception              |
+|----------------------------|------------------------|
+| `error_auth`               | `AuthError` (or `PermissionError` during the auth handshake) |
+| `error_max_locks`          | `MaxLocksError`        |
+| `error_max_waiters`        | `MaxWaitersError`      |
+| `error_limit_mismatch`     | `LimitMismatchError`   |
+| `error_not_enqueued`       | `NotQueuedError`       |
+| `error_already_enqueued`   | `AlreadyQueuedError`   |
+| `error_lease_expired`      | `LeaseExpiredError`    |
+| `error_draining`           | `DrainingError`        |
+| `timeout` (acquire/wait)   | `DflockdTimeoutError`  |
+| anything else              | `DflockdError`         |
 
-- **Single-phase (`acquire`)** — sends a lock request with a timeout. The server grants the lock immediately if free, or enqueues the client in FIFO order. The call blocks until the lock is granted or the timeout expires.
-- **Two-phase (`enqueue` + `wait`)** — splits acquisition into two steps. `enqueue()` joins the queue and returns immediately with `"acquired"` or `"queued"`. `wait()` blocks until the lock is granted. This allows application logic (e.g. notifying an external system) between joining the queue and blocking.
+## Transport layer (`SyncConn` / `AsyncConn`)
 
-### Semaphore acquisition
+Each `Conn` wraps a single TCP (or TLS) connection. The only I/O method
+is `command(cmd, key, arg, *, read_timeout)`:
 
-Semaphores follow the same lifecycle as locks but allow up to N concurrent holders per key (controlled by the `limit` parameter). The protocol uses `sl`/`se`/`sw`/`sr`/`sn` commands instead of `l`/`e`/`w`/`r`/`n`. Both `DistributedLock` and `DistributedSemaphore` support single-phase and two-phase acquisition.
+1. Encode and write the 3-line frame.
+2. Read exactly one response line, capped at 1 MiB.
+3. Return the response string. Decoding is the caller's job.
+
+`SyncConn` uses `socket.settimeout` per-call so long-poll commands
+(`acquire`/`wait`) and short ones (`renew`) share one connection.
+`AsyncConn` uses `asyncio.wait_for` for the same purpose.
+
+If a `command()` call raises (timeout, network error, server protocol
+violation), the connection is unsafe to reuse — close it and dial a new
+one. The high-level types do this automatically.
+
+## High-level layer
+
+`DistributedLock` and `DistributedSemaphore` own a single connection,
+manage the lease-renewal worker, and turn the two-phase API into a
+familiar `acquire()`/`release()` shape. The classes are dataclasses,
+which means construction is just keyword arguments — no boilerplate.
+
+### Single-phase acquire
+
+```
+acquire():
+  1. close any prior connection / renew worker  (reset for new attempt)
+  2. dial server, authenticate if auth_token set
+  3. send `l <key> <timeout> [<lease_ttl>]`
+  4. on grant: store token+lease, start renewal worker
+  5. on timeout: close connection, return False
+  6. on error: close connection, raise the matching sentinel
+```
+
+### Two-phase acquire
+
+```
+enqueue():
+  1-2. as above
+  3. send `e <key> [<lease_ttl>]`
+  4. on "acquired" (fast path): store token+lease, start renewal, return "acquired"
+  5. on "queued": keep the connection, return "queued"
+
+wait(timeout):
+  1. if a token was already acquired in enqueue(): return True (no I/O)
+  2. send `w <key> <timeout>` on the existing connection
+  3. on grant: store token+lease, start renewal, return True
+  4. on timeout: close connection, return False
+```
+
+The same `Conn` is used for `enqueue` and `wait`: the server tracks
+queue position by per-connection `connID`, not by token, so the calls
+must share a connection.
 
 ### Background renewal
 
-Once a lock or semaphore is acquired, the client starts a background renewal loop:
+Once a lock is acquired, a worker (daemon thread / asyncio task) sleeps
+for `lease * renew_ratio` seconds, then sends a renew. The remaining
+seconds returned by the server become the next interval.
 
-- **Async client** — an `asyncio.Task` that sends renew requests at `lease * renew_ratio` intervals.
-- **Sync client** — a daemon `threading.Thread` that does the same.
+Concurrency: `_io_lock` serialises the renewal worker against
+`release()`. The renewal worker checks the in-flight flag on each tick,
+so a `release()` issued while a renew is in flight is processed cleanly
+once the renew completes.
 
-If renewal fails (server unreachable, lease already expired), the client logs an error and the renewal loop exits. The lease will eventually expire server-side.
+### Cleanup
 
-### Signals (pub/sub)
+| Call               | Stops renewal | Sends release | Closes connection |
+|--------------------|---------------|---------------|-------------------|
+| `release()`        | yes           | yes           | yes               |
+| `close()` / `aclose()` | yes       | no            | yes (server auto-releases on disconnect) |
+| context-manager exit | yes         | yes (via `release()`) | yes       |
+| `__del__` (GC)     | best-effort   | no            | best-effort, with `ResourceWarning` |
 
-`SignalConn` provides a separate connection type for pub/sub messaging. Unlike locks and semaphores, signals use a background reader that demultiplexes push messages (`sig <channel> <payload>`) from command responses:
-
-1. `connect()` opens a TCP connection and starts a background reader (asyncio task or daemon thread).
-2. `listen(pattern)` subscribes to channels matching a NATS-style wildcard pattern. Optional `group` parameter enables queue-group load balancing.
-3. `emit(channel, payload)` publishes a signal on a literal channel (no wildcards). Returns the number of listeners delivered to.
-4. `unlisten(pattern)` removes a subscription.
-5. `close()` / `aclose()` shuts down the background reader and closes the connection.
-
-Signals are delivered to a queue (`asyncio.Queue` or `queue.Queue`) that can be consumed via iteration (`for sig in sc:` / `async for sig in sc:`). A `None` sentinel in the queue indicates the connection has been closed.
-
-To prevent idle signal connections from being disconnected by the server's read timeout, `SignalConn` sends periodic `ping` heartbeats (default every 15 seconds). This runs as a background `asyncio.Task` (async) or daemon `threading.Thread` (sync) and can be configured or disabled via `heartbeat_interval_s`.
-
-A standalone `sig_emit()` function is also available for fire-and-forget publishing on plain connections without the background reader overhead.
-
-### Stats
-
-The `stats()` function sends a `stats` command to the server and returns a JSON dict with the current server state: active connections, held locks (with owner, lease expiry, and waiter counts), active semaphores (with holder and waiter counts), and idle entries. This is a low-level function that operates on an existing connection.
-
-### Release and cleanup
-
-On `release()` or context manager exit:
-
-1. The renewal loop is stopped.
-2. A release command is sent to the server.
-3. The TCP connection is closed.
-
-If the client disconnects without releasing (crash, network failure), the server automatically releases the lock when the lease expires or on disconnect (if auto-release is enabled on the server).
-
-**Safety nets:** All server responses are subject to a 1 MiB size guard to prevent unbounded memory usage from malformed responses. If a client is garbage collected without being properly closed, `__del__` closes the underlying socket/transport and emits a `ResourceWarning`.
+Releasing without sending the release (`close()` / GC) relies on
+dflockd's `--auto-release-on-disconnect` (on by default) to free the
+slot. Explicit `release()` is faster because the server doesn't wait for
+the TCP teardown.
 
 ## Sharding
 
-When multiple servers are configured, the client uses a sharding strategy to deterministically map each lock key to a server. The default strategy uses `zlib.crc32` for stable hashing. See [Sharding](sharding.md) for details.
+When `servers=` has more than one entry, the client picks a server using
+the configured `sharding_strategy(key, num_servers) → index`. The
+default is CRC-32 (`stable_hash_shard`) — deterministic across processes
+and matching the Go and TypeScript clients. See [Sharding](sharding.md).
 
-## Module structure
+## Module layout
 
-| Module | Description |
-|---|---|
-| `dflockd_client` | Top-level package with convenience re-exports (`AsyncDistributedLock`, `SyncDistributedLock`, etc.) |
-| `dflockd_client._common` | Shared protocol helpers: `encode_lines()`, `parse_lease()`, `StatsResult`, `Signal`, response size limits |
-| `dflockd_client.client` | Async client (`asyncio`-based), extends `_AsyncBase` |
-| `dflockd_client.sync_client` | Sync client (`socket` + `threading`-based), extends `_SyncBase` |
-| `dflockd_client.sharding` | Sharding strategy and defaults |
+| Module                       | Contents |
+|------------------------------|----------|
+| `dflockd_client`             | Top-level re-exports of every public symbol |
+| `dflockd_client.errors`      | Sentinel exception classes |
+| `dflockd_client.sharding`    | `ShardingStrategy`, `stable_hash_shard`, `DEFAULT_SERVERS` |
+| `dflockd_client._protocol`   | Pure wire protocol (encoders, decoders, validators) |
+| `dflockd_client._sync`       | `SyncConn`, sync command functions, `DistributedLock`, `DistributedSemaphore` |
+| `dflockd_client._async`      | Async equivalents |
+
+The `_sync` and `_async` underscores are a hint that the high-level
+types should be reached for first; the low-level functions are stable
+but only useful when explicit connection management matters.

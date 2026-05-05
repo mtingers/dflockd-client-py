@@ -3,7 +3,7 @@
 ## Requirements
 
 - Python 3.12 or later
-- A running [dflockd](https://github.com/mtingers/dflockd) server
+- A running [dflockd](https://github.com/mtingers/dflockd) server (v2.0.0 or later)
 - No external Python dependencies
 
 ## Install from PyPI
@@ -28,7 +28,7 @@ cd dflockd-client-py
 uv sync
 ```
 
-## Verify installation
+## Verify
 
 ```python
 from dflockd_client import __version__

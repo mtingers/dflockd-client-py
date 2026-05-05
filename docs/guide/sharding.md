@@ -1,36 +1,34 @@
 # Sharding
 
-## Overview
-
-When running multiple dflockd instances, the client distributes keys across servers using a sharding strategy. Each key deterministically routes to the same server, ensuring all operations on a given key go to the same instance.
+When you point the client at more than one dflockd server, it picks one
+per key using a `ShardingStrategy`. The default is CRC-32 — the same
+key always lands on the same server, and a heterogeneous fleet of Go,
+Python, and TypeScript clients all agree on the routing.
 
 ## Default strategy
-
-The built-in `stable_hash_shard` uses `zlib.crc32` for deterministic hashing:
 
 ```python
 def stable_hash_shard(key: str, num_servers: int) -> int:
     return zlib.crc32(key.encode("utf-8")) % num_servers
 ```
 
-Unlike Python's built-in `hash()`, CRC-32 produces the same result across processes regardless of `PYTHONHASHSEED`, making it safe for distributed use.
+`zlib.crc32` is deterministic across processes regardless of
+`PYTHONHASHSEED`, unlike Python's built-in `hash()`.
 
-## Multi-server setup
-
-Pass a list of `(host, port)` tuples to the client:
+## Multi-server example
 
 ```python
-from dflockd_client.sync_client import DistributedLock
+from dflockd_client import SyncDistributedLock
 
 servers = [
-    ("lock-server-1", 6388),
-    ("lock-server-2", 6388),
-    ("lock-server-3", 6388),
+    ("lock-a", 6388),
+    ("lock-b", 6388),
+    ("lock-c", 6388),
 ]
 
-with DistributedLock("my-key", servers=servers) as lock:
-    # "my-key" always routes to the same server
-    pass
+with SyncDistributedLock("user:42:profile", servers=servers) as lock:
+    # always lands on the same server for "user:42:profile"
+    ...
 ```
 
 ## Custom strategies
@@ -38,30 +36,35 @@ with DistributedLock("my-key", servers=servers) as lock:
 Provide any callable with the signature `(key: str, num_servers: int) -> int`:
 
 ```python
-from dflockd_client.sync_client import DistributedLock
+import zlib
+from dflockd_client import SyncDistributedLock
 
-def region_shard(key: str, num_servers: int) -> int:
-    """Route keys prefixed with 'eu-' to server 0, everything else hashed."""
+def region_shard(key: str, n: int) -> int:
+    """Pin EU-prefixed keys to server 0; hash the rest."""
     if key.startswith("eu-"):
         return 0
-    import zlib
-    return zlib.crc32(key.encode()) % num_servers
+    return zlib.crc32(key.encode()) % n
 
-servers = [("eu-server", 6388), ("us-server-1", 6388), ("us-server-2", 6388)]
-
-with DistributedLock("eu-job-1", servers=servers, sharding_strategy=region_shard) as lock:
-    pass  # routes to eu-server
+servers = [("eu", 6388), ("us-1", 6388), ("us-2", 6388)]
+with SyncDistributedLock("eu-job-1", servers=servers, sharding_strategy=region_shard) as lock:
+    ...  # routed to "eu"
 ```
+
+The function must return an index in `[0, num_servers)`. A custom
+strategy that returns out-of-range surfaces as `IndexError` from the
+client.
 
 ## Type signature
 
 ```python
-from collections.abc import Callable
-
-ShardingStrategy = Callable[[str, int], int]
+from dflockd_client import ShardingStrategy
+# ShardingStrategy = Callable[[str, int], int]
 ```
 
-The function receives the lock key and the number of servers, and must return a server index in `[0, num_servers)`.
+## High availability
 
-!!! note
-    Each dflockd instance is independent — there is no replication or consensus between servers. If a server goes down, locks assigned to that server become unavailable. For high availability, consider running behind a load balancer with health checks or using a consensus-based system.
+Each dflockd server is independent — there is no replication or
+consensus between servers. If a sharded server goes down, locks for keys
+that hash to it become unavailable until it's back. For higher
+availability, run dflockd behind a TCP load balancer with health checks,
+or use a consensus-based system if strict failover is required.
