@@ -22,6 +22,10 @@ class DflockdError(RuntimeError):
     """Base class for protocol status errors returned by dflockd."""
 
 
+class DflockdTimeoutError(TimeoutError):
+    """The server returned a protocol timeout response."""
+
+
 class AuthError(DflockdError):
     """Authentication was rejected by the server."""
 
@@ -99,7 +103,19 @@ def _validate_token(token: str) -> None:
         raise ValueError("token must not contain whitespace")
 
 
+def _validate_int(name: str, value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+
+
+def _validate_semaphore_limit(limit: int) -> None:
+    _validate_int("limit", limit)
+    if limit <= 0:
+        raise ValueError("limit must be > 0")
+
+
 def _validate_timeout_s(name: str, value: int) -> None:
+    _validate_int(name, value)
     if value < 0:
         raise ValueError(f"{name} must be >= 0")
     if value > _MAX_PROTOCOL_SECONDS:
@@ -109,6 +125,7 @@ def _validate_timeout_s(name: str, value: int) -> None:
 def _validate_lease_ttl_s(value: int | None) -> None:
     if value is None:
         return
+    _validate_int("lease_ttl_s", value)
     if value <= 0:
         raise ValueError("lease_ttl_s must be > 0")
     if value > _MAX_PROTOCOL_SECONDS:
@@ -147,6 +164,12 @@ def _raise_status_error(operation: str, resp: str) -> NoReturn:
     raise exc_cls(f"{operation} failed: {resp!r}")
 
 
+def _raise_auth_error(resp: str) -> NoReturn:
+    if resp == "error_draining":
+        _raise_status_error("authentication", resp)
+    raise PermissionError(f"authentication failed: {resp!r}")
+
+
 def encode_lines(*lines: str) -> bytes:
     for ln in lines:
         if "\n" in ln or "\r" in ln:
@@ -176,23 +199,29 @@ def _check_cmd_prefix_limit(cmd_prefix: str, limit: int | None) -> None:
     if cmd_prefix == "s":
         if limit is None:
             raise ValueError("limit is required when cmd_prefix='s' (semaphore)")
-        if limit <= 0:
-            raise ValueError("limit must be > 0")
+        _validate_semaphore_limit(limit)
     elif limit is not None:
         raise ValueError("limit must not be set when cmd_prefix='' (lock)")
 
 
 def parse_lease(parts: list[str]) -> int:
-    if len(parts) < 3:
-        log.warning(
-            "server did not return lease in response %r, defaulting to 30s", parts
-        )
-        return 30
+    if len(parts) != 3:
+        raise RuntimeError(f"bad {parts[0] if parts else 'ok'} response: {parts!r}")
     try:
         return int(parts[2])
-    except ValueError:
-        log.warning("non-integer lease in response %r, defaulting to 30s", parts)
-        return 30
+    except ValueError as e:
+        raise RuntimeError(f"bad {parts[0]} response: {parts!r}") from e
+
+
+def parse_token_lease(resp: str, status: str) -> tuple[str, int]:
+    parts = resp.split()
+    if len(parts) != 3 or parts[0] != status:
+        raise RuntimeError(f"bad {status} response: {resp!r}")
+    try:
+        lease = int(parts[2])
+    except ValueError as e:
+        raise RuntimeError(f"bad {status} response: {resp!r}") from e
+    return parts[1], lease
 
 
 class StatsResult(TypedDict):

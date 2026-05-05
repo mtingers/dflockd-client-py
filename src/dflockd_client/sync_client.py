@@ -6,13 +6,15 @@ import ssl
 import threading
 import warnings
 from dataclasses import KW_ONLY, dataclass, field
-from typing import TextIO
+from typing import Any, TextIO
 
 from ._common import (
     _CONNECT_TIMEOUT_S,
     _DEFAULT_HEARTBEAT_INTERVAL_S,
     _MAX_LINE_LEN,
+    _raise_auth_error,
     _raise_status_error,
+    DflockdTimeoutError,
     Signal,
     StatsResult,
     _check_cmd_prefix,
@@ -21,13 +23,14 @@ from ._common import (
     _validate_key,
     _validate_lease_ttl_s,
     _validate_protocol_line,
+    _validate_semaphore_limit,
     _validate_signal_channel,
     _validate_signal_payload,
     _validate_timeout_s,
     _validate_token,
     encode_lines,
     log,
-    parse_lease,
+    parse_token_lease,
 )
 from .sharding import DEFAULT_SERVERS, ShardingStrategy, stable_hash_shard
 
@@ -73,17 +76,12 @@ def acquire(
     resp = _readline(rfile)
     label = f"{'semaphore ' if cmd_prefix else ''}{key!r}"
     if resp == "timeout":
-        raise TimeoutError(f"timeout acquiring {label}")
+        raise DflockdTimeoutError(f"timeout acquiring {label}")
     if not resp.startswith("ok "):
         func = f"{'sem_' if cmd_prefix else ''}acquire"
         _raise_status_error(func, resp)
 
-    resp_parts = resp.split()
-    if len(resp_parts) < 2:
-        raise RuntimeError(f"bad ok response: {resp!r}")
-    token = resp_parts[1]
-    lease = parse_lease(resp_parts)
-    return token, lease
+    return parse_token_lease(resp, "ok")
 
 
 def renew(
@@ -109,12 +107,12 @@ def renew(
         _raise_status_error(func, resp)
 
     parts = resp.split()
-    if len(parts) >= 2:
-        try:
-            return int(parts[1])
-        except ValueError:
-            pass
-    return -1
+    if len(parts) != 2:
+        raise RuntimeError(f"bad {func} response: {resp!r}")
+    try:
+        return int(parts[1])
+    except ValueError as e:
+        raise RuntimeError(f"bad {func} response: {resp!r}") from e
 
 
 def enqueue(
@@ -144,11 +142,7 @@ def enqueue(
 
     resp = _readline(rfile)
     if resp.startswith("acquired "):
-        resp_parts = resp.split()
-        if len(resp_parts) < 2:
-            raise RuntimeError(f"bad acquired response: {resp!r}")
-        token = resp_parts[1]
-        lease = parse_lease(resp_parts)
+        token, lease = parse_token_lease(resp, "acquired")
         return ("acquired", token, lease)
     if resp == "queued":
         return ("queued", None, None)
@@ -177,17 +171,12 @@ def wait(
     resp = _readline(rfile)
     label = f"{'semaphore ' if cmd_prefix else ''}{key!r}"
     if resp == "timeout":
-        raise TimeoutError(f"timeout waiting for {label}")
+        raise DflockdTimeoutError(f"timeout waiting for {label}")
     if not resp.startswith("ok "):
         func = f"{'sem_' if cmd_prefix else ''}wait"
         _raise_status_error(func, resp)
 
-    parts = resp.split()
-    if len(parts) < 2:
-        raise RuntimeError(f"bad ok response: {resp!r}")
-    token = parts[1]
-    lease = parse_lease(parts)
-    return token, lease
+    return parse_token_lease(resp, "ok")
 
 
 def release(
@@ -256,6 +245,9 @@ class _SyncBase:
         default_factory=threading.Lock, init=False, repr=False
     )
     _closed: bool = field(default=False, init=False, repr=False)
+    _state_lock: Any = field(
+        default_factory=threading.RLock, init=False, repr=False
+    )
 
     def __post_init__(self):
         if not self.servers:
@@ -314,8 +306,10 @@ class _SyncBase:
         return self.servers[idx]
 
     def _connect(self) -> tuple[socket.socket, io.TextIOWrapper]:
+        if self.auth_token:
+            _validate_auth_token(self.auth_token)
         self._stop_renew()
-        self.close()
+        self._close_unlocked()
         # Reset for new connection. Order matters: close() sets both
         # _closed and _stop_event, so reset them after close().
         # Create a *new* Event rather than clearing the old one so that
@@ -338,16 +332,15 @@ class _SyncBase:
             self._rfile = None
             raise
         if self.auth_token:
-            _validate_auth_token(self.auth_token)
             try:
                 self._sock.sendall(encode_lines("auth", "_", self.auth_token))
                 resp = _readline(self._rfile)
             except BaseException:
-                self.close()
+                self._close_unlocked()
                 raise
             if resp != "ok":
-                self.close()
-                raise PermissionError(f"authentication failed: {resp!r}")
+                self._close_unlocked()
+                _raise_auth_error(resp)
         self._sock.settimeout(None)
         return self._sock, self._rfile
 
@@ -364,31 +357,42 @@ class _SyncBase:
             self._renew_thread = None
 
     def acquire(self) -> bool:
+        with self._state_lock:
+            return self._acquire_unlocked()
+
+    def _acquire_unlocked(self) -> bool:
+        _validate_timeout_s("acquire_timeout_s", self.acquire_timeout_s)
+        _validate_lease_ttl_s(self.lease_ttl_s)
         sock, rfile = self._connect()
         sock.settimeout(self.acquire_timeout_s + 30)
         try:
             self.token, self.lease = self._proto_acquire(sock, rfile)
-        except TimeoutError:
-            self.close()
+        except DflockdTimeoutError:
+            self._close_unlocked()
             return False
         except BaseException:
-            self.close()
+            self._close_unlocked()
             raise
         sock.settimeout(None)
         self._start_renew()
         return True
 
     def enqueue(self) -> str:
+        with self._state_lock:
+            return self._enqueue_unlocked()
+
+    def _enqueue_unlocked(self) -> str:
         """
         Two-phase step 1: connect and enqueue. Returns "acquired" or "queued".
         Starts renew loop on fast-path acquire.
         """
+        _validate_lease_ttl_s(self.lease_ttl_s)
         sock, rfile = self._connect()
         sock.settimeout(30)
         try:
             status, tok, lease = self._proto_enqueue(sock, rfile)
         except BaseException:
-            self.close()
+            self._close_unlocked()
             raise
         if status == "acquired":
             self.token = tok
@@ -400,6 +404,10 @@ class _SyncBase:
         return status
 
     def wait(self, timeout_s: int | None = None) -> bool:
+        with self._state_lock:
+            return self._wait_unlocked(timeout_s)
+
+    def _wait_unlocked(self, timeout_s: int | None = None) -> bool:
         """
         Two-phase step 2: wait for grant. Returns True if granted, False on timeout.
         If already acquired (fast path from enqueue), returns immediately.
@@ -410,20 +418,25 @@ class _SyncBase:
         if sock is None or rfile is None:
             raise RuntimeError("not connected; call enqueue() first")
         timeout = timeout_s if timeout_s is not None else self.acquire_timeout_s
+        _validate_timeout_s("wait_timeout_s", timeout)
         sock.settimeout(timeout + 30)
         try:
             self.token, self.lease = self._proto_wait(sock, rfile, timeout)
-        except TimeoutError:
-            self.close()
+        except DflockdTimeoutError:
+            self._close_unlocked()
             return False
         except BaseException:
-            self.close()
+            self._close_unlocked()
             raise
         sock.settimeout(None)
         self._start_renew()
         return True
 
     def release(self) -> bool:
+        with self._state_lock:
+            return self._release_unlocked()
+
+    def _release_unlocked(self) -> bool:
         released = False
         try:
             self._stop_renew()
@@ -442,7 +455,7 @@ class _SyncBase:
                             exc_info=True,
                         )
         finally:
-            self.close()
+            self._close_unlocked()
         return released
 
     def __enter__(self):
@@ -502,6 +515,10 @@ class _SyncBase:
             pass
 
     def close(self):
+        with self._state_lock:
+            self._close_unlocked()
+
+    def _close_unlocked(self):
         if self._closed:
             return
         self._closed = True
@@ -571,8 +588,7 @@ def sem_acquire(
     limit: int,
     lease_ttl_s: int | None = None,
 ) -> tuple[str, int]:
-    if limit <= 0:
-        raise ValueError("limit must be > 0")
+    _validate_semaphore_limit(limit)
     return acquire(
         sock,
         rfile,
@@ -601,8 +617,7 @@ def sem_enqueue(
     limit: int,
     lease_ttl_s: int | None = None,
 ) -> tuple[str, str | None, int | None]:
-    if limit <= 0:
-        raise ValueError("limit must be > 0")
+    _validate_semaphore_limit(limit)
     return enqueue(sock, rfile, key, lease_ttl_s, cmd_prefix="s", limit=limit)
 
 
@@ -632,8 +647,7 @@ class DistributedSemaphore(_SyncBase):
     limit: int
 
     def __post_init__(self):
-        if self.limit <= 0:
-            raise ValueError("limit must be > 0")
+        _validate_semaphore_limit(self.limit)
         super().__post_init__()
 
     def _proto_acquire(self, sock, rfile):
@@ -690,7 +704,7 @@ def sig_emit(
     if not resp.startswith("ok "):
         _raise_status_error("signal", resp)
     parts = resp.split()
-    if len(parts) < 2:
+    if len(parts) != 2:
         raise RuntimeError(f"bad signal response: {resp!r}")
     try:
         return int(parts[1])
@@ -765,6 +779,8 @@ class SignalConn:
 
     def connect(self) -> None:
         """Connect to the server and start the background reader thread."""
+        if self.auth_token:
+            _validate_auth_token(self.auth_token)
         self.close()
         self._closed = False
         self._sig_queue = queue.Queue(maxsize=64)
@@ -784,7 +800,6 @@ class SignalConn:
             self._rfile = None
             raise
         if self.auth_token:
-            _validate_auth_token(self.auth_token)
             try:
                 self._sock.sendall(encode_lines("auth", "_", self.auth_token))
                 resp = _readline(self._rfile)
@@ -793,7 +808,7 @@ class SignalConn:
                 raise
             if resp != "ok":
                 self.close()
-                raise PermissionError(f"authentication failed: {resp!r}")
+                _raise_auth_error(resp)
         self._sock.settimeout(None)
         self._read_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._read_thread.start()
@@ -917,7 +932,7 @@ class SignalConn:
         if not resp.startswith("ok "):
             _raise_status_error("signal", resp)
         parts = resp.split()
-        if len(parts) < 2:
+        if len(parts) != 2:
             raise RuntimeError(f"bad signal response: {resp!r}")
         try:
             return int(parts[1])

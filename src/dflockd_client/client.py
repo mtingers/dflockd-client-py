@@ -10,7 +10,9 @@ from ._common import (
     _DEFAULT_HEARTBEAT_INTERVAL_S,
     _IO_TIMEOUT_SLACK_S,
     _MAX_LINE_LEN,
+    _raise_auth_error,
     _raise_status_error,
+    DflockdTimeoutError,
     Signal,
     StatsResult,
     _check_cmd_prefix,
@@ -19,13 +21,14 @@ from ._common import (
     _validate_key,
     _validate_lease_ttl_s,
     _validate_protocol_line,
+    _validate_semaphore_limit,
     _validate_signal_channel,
     _validate_signal_payload,
     _validate_timeout_s,
     _validate_token,
     encode_lines,
     log,
-    parse_lease,
+    parse_token_lease,
 )
 from .sharding import DEFAULT_SERVERS, ShardingStrategy, stable_hash_shard
 
@@ -73,18 +76,12 @@ async def acquire(
     resp = await _readline(reader)
     label = f"{'semaphore ' if cmd_prefix else ''}{key!r}"
     if resp == "timeout":
-        raise TimeoutError(f"timeout acquiring {label}")
+        raise DflockdTimeoutError(f"timeout acquiring {label}")
     if not resp.startswith("ok "):
         func = f"{'sem_' if cmd_prefix else ''}acquire"
         _raise_status_error(func, resp)
 
-    # ok <token> <lease>
-    resp_parts = resp.split()
-    if len(resp_parts) < 2:
-        raise RuntimeError(f"bad ok response: {resp!r}")
-    token = resp_parts[1]
-    lease = parse_lease(resp_parts)
-    return token, lease
+    return parse_token_lease(resp, "ok")
 
 
 async def renew(
@@ -111,12 +108,12 @@ async def renew(
         _raise_status_error(func, resp)
 
     parts = resp.split()
-    if len(parts) >= 2:
-        try:
-            return int(parts[1])
-        except ValueError:
-            pass
-    return -1
+    if len(parts) != 2:
+        raise RuntimeError(f"bad {func} response: {resp!r}")
+    try:
+        return int(parts[1])
+    except ValueError as e:
+        raise RuntimeError(f"bad {func} response: {resp!r}") from e
 
 
 async def enqueue(
@@ -147,11 +144,7 @@ async def enqueue(
 
     resp = await _readline(reader)
     if resp.startswith("acquired "):
-        resp_parts = resp.split()
-        if len(resp_parts) < 2:
-            raise RuntimeError(f"bad acquired response: {resp!r}")
-        token = resp_parts[1]
-        lease = parse_lease(resp_parts)
+        token, lease = parse_token_lease(resp, "acquired")
         return ("acquired", token, lease)
     if resp == "queued":
         return ("queued", None, None)
@@ -181,17 +174,12 @@ async def wait(
     resp = await _readline(reader)
     label = f"{'semaphore ' if cmd_prefix else ''}{key!r}"
     if resp == "timeout":
-        raise TimeoutError(f"timeout waiting for {label}")
+        raise DflockdTimeoutError(f"timeout waiting for {label}")
     if not resp.startswith("ok "):
         func = f"{'sem_' if cmd_prefix else ''}wait"
         _raise_status_error(func, resp)
 
-    parts = resp.split()
-    if len(parts) < 2:
-        raise RuntimeError(f"bad ok response: {resp!r}")
-    token = parts[1]
-    lease = parse_lease(parts)
-    return token, lease
+    return parse_token_lease(resp, "ok")
 
 
 async def release(
@@ -259,6 +247,9 @@ class _AsyncBase:
     lease: int = field(default=0, init=False)
     _renew_task: asyncio.Task | None = field(default=None, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
+    _state_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock, init=False, repr=False
+    )
 
     def __post_init__(self):
         if not self.servers:
@@ -333,8 +324,10 @@ class _AsyncBase:
     async def _connect(
         self,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        if self.auth_token:
+            _validate_auth_token(self.auth_token)
         await self._cancel_renew()
-        await self.aclose()
+        await self._aclose_unlocked()
         self._closed = False
         host, port = self._pick_server()
         self._reader, self._writer = await asyncio.wait_for(
@@ -344,7 +337,6 @@ class _AsyncBase:
             timeout=self.connect_timeout_s,
         )
         if self.auth_token:
-            _validate_auth_token(self.auth_token)
             try:
                 self._writer.write(encode_lines("auth", "_", self.auth_token))
                 await self._writer.drain()
@@ -352,14 +344,20 @@ class _AsyncBase:
                     _readline(self._reader), timeout=self.connect_timeout_s
                 )
             except BaseException:
-                await self.aclose()
+                await self._aclose_unlocked()
                 raise
             if resp != "ok":
-                await self.aclose()
-                raise PermissionError(f"authentication failed: {resp!r}")
+                await self._aclose_unlocked()
+                _raise_auth_error(resp)
         return self._reader, self._writer
 
     async def acquire(self) -> bool:
+        async with self._state_lock:
+            return await self._acquire_unlocked()
+
+    async def _acquire_unlocked(self) -> bool:
+        _validate_timeout_s("acquire_timeout_s", self.acquire_timeout_s)
+        _validate_lease_ttl_s(self.lease_ttl_s)
         reader, writer = await self._connect()
         # Cap how long we'll wait on the response. The server enforces
         # acquire_timeout_s itself and returns "timeout" within that
@@ -372,20 +370,25 @@ class _AsyncBase:
                 self._proto_acquire(reader, writer),
                 timeout=self.acquire_timeout_s + _IO_TIMEOUT_SLACK_S,
             )
-        except TimeoutError:
-            await self.aclose()
+        except DflockdTimeoutError:
+            await self._aclose_unlocked()
             return False
         except BaseException:
-            await self.aclose()
+            await self._aclose_unlocked()
             raise
         self._renew_task = asyncio.create_task(self._renew_loop())
         return True
 
     async def enqueue(self) -> str:
+        async with self._state_lock:
+            return await self._enqueue_unlocked()
+
+    async def _enqueue_unlocked(self) -> str:
         """
         Two-phase step 1: connect and enqueue. Returns "acquired" or "queued".
         Starts renew loop on fast-path acquire.
         """
+        _validate_lease_ttl_s(self.lease_ttl_s)
         reader, writer = await self._connect()
         try:
             status, tok, lease = await asyncio.wait_for(
@@ -393,7 +396,7 @@ class _AsyncBase:
                 timeout=_IO_TIMEOUT_SLACK_S,
             )
         except BaseException:
-            await self.aclose()
+            await self._aclose_unlocked()
             raise
         if status == "acquired":
             self.token = tok
@@ -402,6 +405,10 @@ class _AsyncBase:
         return status
 
     async def wait(self, timeout_s: int | None = None) -> bool:
+        async with self._state_lock:
+            return await self._wait_unlocked(timeout_s)
+
+    async def _wait_unlocked(self, timeout_s: int | None = None) -> bool:
         """
         Two-phase step 2: wait for grant. Returns True if granted, False on timeout.
         If already acquired (fast path from enqueue), returns immediately.
@@ -412,21 +419,26 @@ class _AsyncBase:
         if self._reader is None or self._writer is None:
             raise RuntimeError("not connected; call enqueue() first")
         timeout = timeout_s if timeout_s is not None else self.acquire_timeout_s
+        _validate_timeout_s("wait_timeout_s", timeout)
         try:
             self.token, self.lease = await asyncio.wait_for(
                 self._proto_wait(self._reader, self._writer, timeout),
                 timeout=timeout + _IO_TIMEOUT_SLACK_S,
             )
-        except TimeoutError:
-            await self.aclose()
+        except DflockdTimeoutError:
+            await self._aclose_unlocked()
             return False
         except BaseException:
-            await self.aclose()
+            await self._aclose_unlocked()
             raise
         self._renew_task = asyncio.create_task(self._renew_loop())
         return True
 
     async def release(self) -> bool:
+        async with self._state_lock:
+            return await self._release_unlocked()
+
+    async def _release_unlocked(self) -> bool:
         released = False
         try:
             await self._cancel_renew()
@@ -452,7 +464,7 @@ class _AsyncBase:
                         exc_info=True,
                     )
         finally:
-            await self.aclose()
+            await self._aclose_unlocked()
         return released
 
     async def __aenter__(self):
@@ -508,6 +520,10 @@ class _AsyncBase:
             await self.release()
 
     async def aclose(self):
+        async with self._state_lock:
+            await self._aclose_unlocked()
+
+    async def _aclose_unlocked(self):
         if self._closed:
             return
         self._closed = True
@@ -564,8 +580,7 @@ async def sem_acquire(
     limit: int,
     lease_ttl_s: int | None = None,
 ) -> tuple[str, int]:
-    if limit <= 0:
-        raise ValueError("limit must be > 0")
+    _validate_semaphore_limit(limit)
     return await acquire(
         reader,
         writer,
@@ -594,8 +609,7 @@ async def sem_enqueue(
     limit: int,
     lease_ttl_s: int | None = None,
 ) -> tuple[str, str | None, int | None]:
-    if limit <= 0:
-        raise ValueError("limit must be > 0")
+    _validate_semaphore_limit(limit)
     return await enqueue(
         reader,
         writer,
@@ -632,8 +646,7 @@ class DistributedSemaphore(_AsyncBase):
     limit: int
 
     def __post_init__(self):
-        if self.limit <= 0:
-            raise ValueError("limit must be > 0")
+        _validate_semaphore_limit(self.limit)
         super().__post_init__()
 
     async def _proto_acquire(self, reader, writer):
@@ -698,7 +711,7 @@ async def sig_emit(
     if not resp.startswith("ok "):
         _raise_status_error("signal", resp)
     parts = resp.split()
-    if len(parts) < 2:
+    if len(parts) != 2:
         raise RuntimeError(f"bad signal response: {resp!r}")
     try:
         return int(parts[1])
@@ -773,6 +786,8 @@ class SignalConn:
 
     async def connect(self) -> None:
         """Connect to the server and start the background reader."""
+        if self.auth_token:
+            _validate_auth_token(self.auth_token)
         await self.aclose()
         self._closed = False
         self._sig_queue = asyncio.Queue(maxsize=64)
@@ -785,7 +800,6 @@ class SignalConn:
             timeout=self.connect_timeout_s,
         )
         if self.auth_token:
-            _validate_auth_token(self.auth_token)
             try:
                 self._writer.write(encode_lines("auth", "_", self.auth_token))
                 await self._writer.drain()
@@ -797,7 +811,7 @@ class SignalConn:
                 raise
             if resp != "ok":
                 await self.aclose()
-                raise PermissionError(f"authentication failed: {resp!r}")
+                _raise_auth_error(resp)
         self._read_task = asyncio.create_task(self._read_loop())
         if self.heartbeat_interval_s > 0:
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -968,7 +982,7 @@ class SignalConn:
         if not resp.startswith("ok "):
             _raise_status_error("signal", resp)
         parts = resp.split()
-        if len(parts) < 2:
+        if len(parts) != 2:
             raise RuntimeError(f"bad signal response: {resp!r}")
         try:
             return int(parts[1])

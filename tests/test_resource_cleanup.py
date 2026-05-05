@@ -17,7 +17,13 @@ import pytest
 
 import dflockd_client.client as aclient
 import dflockd_client.sync_client as sclient
-from dflockd_client._common import _MAX_LINE_LEN, MaxLocksError, NotQueuedError
+from dflockd_client._common import (
+    _MAX_LINE_LEN,
+    DflockdTimeoutError,
+    DrainingError,
+    MaxLocksError,
+    NotQueuedError,
+)
 
 
 # ===========================================================================
@@ -683,15 +689,17 @@ class TestParseLease:
 
         assert parse_lease(["ok", "token", "30"]) == 30
 
-    def test_missing_lease_defaults_30(self):
+    def test_missing_lease_raises(self):
         from dflockd_client._common import parse_lease
 
-        assert parse_lease(["ok", "token"]) == 30
+        with pytest.raises(RuntimeError, match="bad ok response"):
+            parse_lease(["ok", "token"])
 
-    def test_non_integer_defaults_30(self):
+    def test_non_integer_raises(self):
         from dflockd_client._common import parse_lease
 
-        assert parse_lease(["ok", "token", "abc"]) == 30
+        with pytest.raises(RuntimeError, match="bad ok response"):
+            parse_lease(["ok", "token", "abc"])
 
 
 # ===========================================================================
@@ -881,9 +889,17 @@ class TestProtocolValidation:
         with pytest.raises(ValueError, match="acquire_timeout_s"):
             await aclient.acquire(None, None, "k", -1)  # type: ignore[arg-type]
 
+    async def test_async_rejects_float_timeout_before_io(self):
+        with pytest.raises(TypeError, match="acquire_timeout_s"):
+            await aclient.acquire(None, None, "k", 1.5)  # type: ignore[arg-type]
+
     async def test_async_rejects_zero_lease_before_io(self):
         with pytest.raises(ValueError, match="lease_ttl_s"):
             await aclient.acquire(None, None, "k", 1, lease_ttl_s=0)  # type: ignore[arg-type]
+
+    async def test_async_rejects_bool_limit_before_io(self):
+        with pytest.raises(TypeError, match="limit"):
+            await aclient.sem_acquire(None, None, "k", 1, True)  # type: ignore[arg-type]
 
     async def test_async_rejects_token_with_whitespace_before_io(self):
         with pytest.raises(ValueError, match="token"):
@@ -897,9 +913,17 @@ class TestProtocolValidation:
         with pytest.raises(ValueError, match="acquire_timeout_s"):
             sclient.acquire(None, None, "k", -1)  # type: ignore[arg-type]
 
+    def test_sync_rejects_float_timeout_before_io(self):
+        with pytest.raises(TypeError, match="acquire_timeout_s"):
+            sclient.acquire(None, None, "k", 1.5)  # type: ignore[arg-type]
+
     def test_sync_rejects_zero_lease_before_io(self):
         with pytest.raises(ValueError, match="lease_ttl_s"):
             sclient.acquire(None, None, "k", 1, lease_ttl_s=0)  # type: ignore[arg-type]
+
+    def test_sync_rejects_bool_limit_before_io(self):
+        with pytest.raises(TypeError, match="limit"):
+            sclient.sem_acquire(None, None, "k", 1, True)  # type: ignore[arg-type]
 
     def test_sync_rejects_token_with_whitespace_before_io(self):
         with pytest.raises(ValueError, match="token"):
@@ -938,6 +962,26 @@ class TestProtocolValidation:
             finally:
                 await lock.aclose()
 
+    async def test_async_auth_draining_is_not_permission_error(self):
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"error_draining\n")
+        writer = MagicMock(spec=asyncio.StreamWriter)
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        writer.close = MagicMock()
+        writer.wait_closed = AsyncMock()
+
+        async def fake_open_connection(*_args, **_kwargs):
+            return reader, writer
+
+        lock = _make_async_lock(auth_token="secret")
+        with patch(
+            "dflockd_client.client.asyncio.open_connection",
+            side_effect=fake_open_connection,
+        ):
+            with pytest.raises(DrainingError, match="authentication failed"):
+                await lock._connect()
+
     def test_sync_empty_auth_token_is_not_sent(self):
         sock = MagicMock(spec=socket.socket)
         sock.makefile.return_value = io.StringIO("")
@@ -952,6 +996,86 @@ class TestProtocolValidation:
                 sock.sendall.assert_not_called()
             finally:
                 lock.close()
+
+    def test_sync_auth_draining_is_not_permission_error(self):
+        sock = MagicMock(spec=socket.socket)
+        sock.makefile.return_value = io.StringIO("error_draining\n")
+        lock = _make_sync_lock(auth_token="secret")
+
+        with patch(
+            "dflockd_client.sync_client.socket.create_connection",
+            return_value=sock,
+        ):
+            with pytest.raises(DrainingError, match="authentication failed"):
+                lock._connect()
+
+
+# ===========================================================================
+# High-level timeout handling
+# ===========================================================================
+
+
+class TestHighLevelTimeoutHandling:
+    async def test_async_protocol_timeout_returns_false(self):
+        lock = _make_async_lock(acquire_timeout_s=1)
+
+        async def fake_connect():
+            return object(), object()
+
+        async def fake_acquire(_reader, _writer):
+            raise DflockdTimeoutError("timeout acquiring 'k'")
+
+        lock._connect = fake_connect  # type: ignore[method-assign]
+        lock._proto_acquire = fake_acquire  # type: ignore[method-assign]
+
+        assert await lock.acquire() is False
+
+    async def test_async_io_timeout_raises(self, monkeypatch):
+        lock = _make_async_lock(acquire_timeout_s=0)
+
+        async def fake_connect():
+            return object(), object()
+
+        async def slow_acquire(_reader, _writer):
+            await asyncio.sleep(1)
+
+        monkeypatch.setattr(aclient, "_IO_TIMEOUT_SLACK_S", 0.01)
+        lock._connect = fake_connect  # type: ignore[method-assign]
+        lock._proto_acquire = slow_acquire  # type: ignore[method-assign]
+
+        with pytest.raises(TimeoutError):
+            await lock.acquire()
+
+    def test_sync_protocol_timeout_returns_false(self):
+        lock = _make_sync_lock(acquire_timeout_s=1)
+        sock = MagicMock(spec=socket.socket)
+
+        def fake_connect():
+            return sock, object()
+
+        def fake_acquire(_sock, _rfile):
+            raise DflockdTimeoutError("timeout acquiring 'k'")
+
+        lock._connect = fake_connect  # type: ignore[method-assign]
+        lock._proto_acquire = fake_acquire  # type: ignore[method-assign]
+
+        assert lock.acquire() is False
+
+    def test_sync_io_timeout_raises(self):
+        lock = _make_sync_lock(acquire_timeout_s=1)
+        sock = MagicMock(spec=socket.socket)
+
+        def fake_connect():
+            return sock, object()
+
+        def fake_acquire(_sock, _rfile):
+            raise TimeoutError("socket timed out")
+
+        lock._connect = fake_connect  # type: ignore[method-assign]
+        lock._proto_acquire = fake_acquire  # type: ignore[method-assign]
+
+        with pytest.raises(TimeoutError, match="socket timed out"):
+            lock.acquire()
 
 
 # ===========================================================================
@@ -1011,10 +1135,10 @@ class TestAsyncProtocolErrors:
         result = await aclient.renew(r, w, "k", "tok")
         assert result == 42
 
-    async def test_renew_bare_ok_returns_negative(self):
+    async def test_renew_bare_ok_raises(self):
         r, w = _async_rw(b"ok\n")
-        result = await aclient.renew(r, w, "k", "tok")
-        assert result == -1
+        with pytest.raises(RuntimeError, match="bad renew response"):
+            await aclient.renew(r, w, "k", "tok")
 
     async def test_renew_bad_response(self):
         r, w = _async_rw(b"error bad\n")
@@ -1193,10 +1317,10 @@ class TestSyncProtocolErrors:
         result = sclient.renew(s, r, "k", "tok")  # type: ignore[arg-type]
         assert result == 42
 
-    def test_renew_bare_ok(self):
+    def test_renew_bare_ok_raises(self):
         s, r = _sync_rw("ok\n")
-        result = sclient.renew(s, r, "k", "tok")  # type: ignore[arg-type]
-        assert result == -1
+        with pytest.raises(RuntimeError, match="bad renew response"):
+            sclient.renew(s, r, "k", "tok")  # type: ignore[arg-type]
 
     def test_renew_bad_response(self):
         s, r = _sync_rw("error bad\n")
