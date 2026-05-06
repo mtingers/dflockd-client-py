@@ -46,7 +46,9 @@ class FakeConn:
     calls: list[_Call] = field(default_factory=list)
     closed: bool = False
 
-    def command(self, cmd: str, key: str, arg: str, *, read_timeout: float | None) -> str:
+    def command(
+        self, cmd: str, key: str, arg: str, *, read_timeout: float | None
+    ) -> str:
         self.calls.append(_Call(cmd, key, arg, read_timeout))
         return self.responses.pop(0)
 
@@ -453,6 +455,7 @@ class TestSyncConnReadLine:
 
     def test_oversized_response_raises(self):
         from dflockd_client import _protocol as proto
+
         sock = MagicMock(spec=socket.socket)
         conn = ds.SyncConn(sock)
         conn._rfile = MagicMock()

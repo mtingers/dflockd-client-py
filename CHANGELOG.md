@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.0.0] - 2026-05-05
+
+### Changed
+
+- Rewrote the client for the dflockd v2 wire protocol, with parallel sync and async APIs for locks and counting semaphores.
+- Simplified the public surface around `SyncDistributedLock`, `AsyncDistributedLock`, `SyncDistributedSemaphore`, `AsyncDistributedSemaphore`, `SyncConn`, and `AsyncConn`.
+- Updated stats decoding for the v2 server shape; pub/sub stats fields are no longer present.
+
+### Fixed
+
+- Hardened sync and async lifecycle cleanup around cancellation, release, renewal failure, and instance reuse.
+- Closed sync transports after post-write command failures so stale responses cannot corrupt the next command.
+- Validated high-level keys, acquire timeouts, lease TTLs, semaphore limits, and custom shard indexes before use.
+
+### Removed
+
+- Removed the v1 pub/sub signal client APIs; dflockd v2 focuses this package on distributed locks and semaphores.
+
+[v2.0.0]: https://github.com/mtingers/dflockd-client-py/releases/tag/v2.0.0
+
 ## [v1.9.0] - 2026-03-13
 
 ### Added
@@ -372,4 +392,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Pages documentation deployment workflow
 
 [v0.3.0]: https://github.com/mtingers/dflockd/releases/tag/0.3.0
-

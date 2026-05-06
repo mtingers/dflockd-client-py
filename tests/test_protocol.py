@@ -202,7 +202,9 @@ class TestEncodeLines:
         assert proto.encode_lines("ping", "_", "") == b"ping\n_\n\n"
 
     def test_unicode(self):
-        assert proto.encode_lines("l", "résumé", "0") == "l\nrésumé\n0\n".encode("utf-8")
+        assert proto.encode_lines("l", "résumé", "0") == "l\nrésumé\n0\n".encode(
+            "utf-8"
+        )
 
     def test_rejects_embedded_newline(self):
         with pytest.raises(ValueError, match="must not contain newlines"):
@@ -412,7 +414,9 @@ class TestParseRenewResponse:
 class TestParseEnqueueResponse:
     def test_queued(self):
         assert proto.parse_enqueue_response("queued", op="enqueue") == (
-            "queued", None, None,
+            "queued",
+            None,
+            None,
         )
 
     def test_acquired_grant(self):

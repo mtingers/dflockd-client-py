@@ -62,9 +62,7 @@ class AsyncConn:
                 self._writer.write(proto.encode_lines(cmd, key, arg))
                 write_committed = True
                 await self._writer.drain()
-                return await asyncio.wait_for(
-                    self._read_line(), timeout=read_timeout
-                )
+                return await asyncio.wait_for(self._read_line(), timeout=read_timeout)
             except BaseException:
                 if write_committed:
                     self.close_nowait()
@@ -113,7 +111,10 @@ async def open_conn(
     ``stats`` JSON line (asyncio's default is 64 KiB, which is too small)."""
     reader, writer = await asyncio.wait_for(
         asyncio.open_connection(
-            host, port, ssl=ssl_context, limit=proto.MAX_RESPONSE_LINE_BYTES,
+            host,
+            port,
+            ssl=ssl_context,
+            limit=proto.MAX_RESPONSE_LINE_BYTES,
         ),
         timeout=connect_timeout_s,
     )
@@ -142,17 +143,19 @@ async def acquire(
 ) -> tuple[str, int]:
     proto.validate_prefix_limit(prefix, limit)
     proto.validate_key("key", key)
-    arg = proto.make_acquire_arg(acquire_timeout_s, limit=limit, lease_ttl_s=lease_ttl_s)
+    arg = proto.make_acquire_arg(
+        acquire_timeout_s, limit=limit, lease_ttl_s=lease_ttl_s
+    )
     resp = await conn.command(
-        proto.cmd_name(prefix, "l"), key, arg,
+        proto.cmd_name(prefix, "l"),
+        key,
+        arg,
         read_timeout=acquire_timeout_s + _IO_SLACK_S,
     )
     return proto.parse_grant_response(resp, op=proto.op_label(prefix, "acquire"))
 
 
-async def release(
-    conn: AsyncConn, key: str, token: str, *, prefix: str = ""
-) -> None:
+async def release(conn: AsyncConn, key: str, token: str, *, prefix: str = "") -> None:
     proto.validate_prefix(prefix)
     proto.validate_key("key", key)
     proto.validate_token(token)
@@ -208,7 +211,9 @@ async def wait(
     proto.validate_key("key", key)
     arg = proto.make_wait_arg(wait_timeout_s)
     resp = await conn.command(
-        proto.cmd_name(prefix, "w"), key, arg,
+        proto.cmd_name(prefix, "w"),
+        key,
+        arg,
         read_timeout=wait_timeout_s + _IO_SLACK_S,
     )
     return proto.parse_grant_response(resp, op=proto.op_label(prefix, "wait"))
@@ -258,9 +263,7 @@ async def sem_enqueue(
     return await enqueue(conn, key, lease_ttl_s, prefix="s", limit=limit)
 
 
-async def sem_wait(
-    conn: AsyncConn, key: str, wait_timeout_s: int
-) -> tuple[str, int]:
+async def sem_wait(conn: AsyncConn, key: str, wait_timeout_s: int) -> tuple[str, int]:
     return await wait(conn, key, wait_timeout_s, prefix="s")
 
 
@@ -299,12 +302,8 @@ class _AsyncBase(metaclass=ABCMeta):
     _conn: AsyncConn | None = field(default=None, init=False, repr=False)
     token: str | None = field(default=None, init=False)
     lease: int = field(default=0, init=False)
-    _renew_task: asyncio.Task[None] | None = field(
-        default=None, init=False, repr=False
-    )
-    _io_lock: asyncio.Lock = field(
-        default_factory=asyncio.Lock, init=False, repr=False
-    )
+    _renew_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
+    _io_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
     _state_lock: asyncio.Lock = field(
         default_factory=asyncio.Lock, init=False, repr=False
     )
@@ -337,9 +336,7 @@ class _AsyncBase(metaclass=ABCMeta):
     ) -> tuple[str, str | None, int | None]: ...
 
     @abstractmethod
-    async def _proto_wait(
-        self, conn: AsyncConn, timeout_s: int
-    ) -> tuple[str, int]: ...
+    async def _proto_wait(self, conn: AsyncConn, timeout_s: int) -> tuple[str, int]: ...
 
     # --- public API ----------------------------------------------------------
 
@@ -466,7 +463,9 @@ class _AsyncBase(metaclass=ABCMeta):
         except Exception:
             log.warning(
                 "%s explicit release failed (lease will expire server-side): key=%s",
-                type(self).__name__, self.key, exc_info=True,
+                type(self).__name__,
+                self.key,
+                exc_info=True,
             )
             return False
 
@@ -504,7 +503,9 @@ class _AsyncBase(metaclass=ABCMeta):
     async def _open_and_authenticate(self) -> None:
         host, port = self._pick_server()
         conn = await open_conn(
-            host, port, ssl_context=self.ssl_context,
+            host,
+            port,
+            ssl_context=self.ssl_context,
             connect_timeout_s=self.connect_timeout_s,
         )
         self._conn = await _maybe_authenticate(conn, self.auth_token)
@@ -588,7 +589,9 @@ class _AsyncBase(metaclass=ABCMeta):
             return
         log.error(
             "%s lost (renew failed): key=%s token=%s",
-            type(self).__name__, self.key, self.token,
+            type(self).__name__,
+            self.key,
+            self.token,
         )
 
     def _update_lease(self, remaining: int) -> None:
@@ -611,9 +614,7 @@ def _validate_renew_ratio(ratio: float) -> None:
         raise ValueError("renew_ratio must be between 0 and 1 (exclusive)")
 
 
-async def _maybe_authenticate(
-    conn: AsyncConn, auth_token: str | None
-) -> AsyncConn:
+async def _maybe_authenticate(conn: AsyncConn, auth_token: str | None) -> AsyncConn:
     if auth_token is None:
         return conn
     try:
@@ -645,7 +646,8 @@ def _warn_if_leaked_conn(obj: "_AsyncBase") -> None:
             warnings.warn(
                 f"{type(obj).__name__}(key={obj.key!r}) was garbage collected "
                 "without calling release() or aclose(). This leaks a connection.",
-                ResourceWarning, stacklevel=2,
+                ResourceWarning,
+                stacklevel=2,
             )
             with contextlib.suppress(Exception):
                 obj._conn.close_nowait()
@@ -670,7 +672,10 @@ class DistributedLock(_AsyncBase):
 
     async def _proto_renew(self, conn: AsyncConn, token: str) -> int:
         return await renew(
-            conn, self.key, token, self.lease_ttl_s,
+            conn,
+            self.key,
+            token,
+            self.lease_ttl_s,
             read_timeout=_RENEW_READ_TIMEOUT_S,
         )
 
@@ -701,8 +706,12 @@ class DistributedSemaphore(_AsyncBase):
 
     async def _proto_acquire(self, conn: AsyncConn) -> tuple[str, int]:
         return await acquire(
-            conn, self.key, self.acquire_timeout_s, self.lease_ttl_s,
-            prefix="s", limit=self.limit,
+            conn,
+            self.key,
+            self.acquire_timeout_s,
+            self.lease_ttl_s,
+            prefix="s",
+            limit=self.limit,
         )
 
     async def _proto_release(self, conn: AsyncConn, token: str) -> None:
@@ -710,8 +719,12 @@ class DistributedSemaphore(_AsyncBase):
 
     async def _proto_renew(self, conn: AsyncConn, token: str) -> int:
         return await renew(
-            conn, self.key, token, self.lease_ttl_s,
-            prefix="s", read_timeout=_RENEW_READ_TIMEOUT_S,
+            conn,
+            self.key,
+            token,
+            self.lease_ttl_s,
+            prefix="s",
+            read_timeout=_RENEW_READ_TIMEOUT_S,
         )
 
     async def _proto_enqueue(

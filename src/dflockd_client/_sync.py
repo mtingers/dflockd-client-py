@@ -185,9 +185,13 @@ def acquire(
     raises :class:`DflockdTimeoutError` on server-side timeout."""
     proto.validate_prefix_limit(prefix, limit)
     proto.validate_key("key", key)
-    arg = proto.make_acquire_arg(acquire_timeout_s, limit=limit, lease_ttl_s=lease_ttl_s)
+    arg = proto.make_acquire_arg(
+        acquire_timeout_s, limit=limit, lease_ttl_s=lease_ttl_s
+    )
     resp = conn.command(
-        proto.cmd_name(prefix, "l"), key, arg,
+        proto.cmd_name(prefix, "l"),
+        key,
+        arg,
         read_timeout=acquire_timeout_s + _IO_SLACK_S,
     )
     return proto.parse_grant_response(resp, op=proto.op_label(prefix, "acquire"))
@@ -235,9 +239,7 @@ def enqueue(
     proto.validate_prefix_limit(prefix, limit)
     proto.validate_key("key", key)
     arg = proto.make_enqueue_arg(limit=limit, lease_ttl_s=lease_ttl_s)
-    resp = conn.command(
-        proto.cmd_name(prefix, "e"), key, arg, read_timeout=_IO_SLACK_S
-    )
+    resp = conn.command(proto.cmd_name(prefix, "e"), key, arg, read_timeout=_IO_SLACK_S)
     return proto.parse_enqueue_response(resp, op=proto.op_label(prefix, "enqueue"))
 
 
@@ -253,7 +255,9 @@ def wait(
     proto.validate_key("key", key)
     arg = proto.make_wait_arg(wait_timeout_s)
     resp = conn.command(
-        proto.cmd_name(prefix, "w"), key, arg,
+        proto.cmd_name(prefix, "w"),
+        key,
+        arg,
         read_timeout=wait_timeout_s + _IO_SLACK_S,
     )
     return proto.parse_grant_response(resp, op=proto.op_label(prefix, "wait"))
@@ -351,9 +355,7 @@ class _SyncBase(metaclass=ABCMeta):
     _io_lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False
     )
-    _state_lock: Any = field(
-        default_factory=threading.RLock, init=False, repr=False
-    )
+    _state_lock: Any = field(default_factory=threading.RLock, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -378,9 +380,7 @@ class _SyncBase(metaclass=ABCMeta):
     def _proto_renew(self, conn: SyncConn, token: str) -> int: ...
 
     @abstractmethod
-    def _proto_enqueue(
-        self, conn: SyncConn
-    ) -> tuple[str, str | None, int | None]: ...
+    def _proto_enqueue(self, conn: SyncConn) -> tuple[str, str | None, int | None]: ...
 
     @abstractmethod
     def _proto_wait(self, conn: SyncConn, timeout_s: int) -> tuple[str, int]: ...
@@ -507,7 +507,9 @@ class _SyncBase(metaclass=ABCMeta):
         except Exception:
             log.warning(
                 "%s explicit release failed (lease will expire server-side): key=%s",
-                type(self).__name__, self.key, exc_info=True,
+                type(self).__name__,
+                self.key,
+                exc_info=True,
             )
             return False
 
@@ -561,7 +563,9 @@ class _SyncBase(metaclass=ABCMeta):
     def _open_and_authenticate(self) -> None:
         host, port = self._pick_server()
         conn = open_conn(
-            host, port, ssl_context=self.ssl_context,
+            host,
+            port,
+            ssl_context=self.ssl_context,
             connect_timeout_s=self.connect_timeout_s,
         )
         self._conn = _maybe_authenticate(conn, self.auth_token)
@@ -631,7 +635,9 @@ class _SyncBase(metaclass=ABCMeta):
             return
         log.error(
             "%s lost (renew failed): key=%s token=%s",
-            type(self).__name__, self.key, self.token,
+            type(self).__name__,
+            self.key,
+            self.token,
         )
 
     def _update_lease(self, remaining: int) -> None:
@@ -673,7 +679,8 @@ def _warn_if_leaked_conn(obj: "_SyncBase") -> None:
             warnings.warn(
                 f"{type(obj).__name__}(key={obj.key!r}) was garbage collected "
                 "without calling release() or close(). This leaks a connection.",
-                ResourceWarning, stacklevel=2,
+                ResourceWarning,
+                stacklevel=2,
             )
             _close_quietly(obj._conn.close)
     except BaseException:
@@ -697,7 +704,10 @@ class DistributedLock(_SyncBase):
 
     def _proto_renew(self, conn: SyncConn, token: str) -> int:
         return renew(
-            conn, self.key, token, self.lease_ttl_s,
+            conn,
+            self.key,
+            token,
+            self.lease_ttl_s,
             read_timeout=_RENEW_READ_TIMEOUT_S,
         )
 
@@ -726,8 +736,12 @@ class DistributedSemaphore(_SyncBase):
 
     def _proto_acquire(self, conn: SyncConn) -> tuple[str, int]:
         return acquire(
-            conn, self.key, self.acquire_timeout_s, self.lease_ttl_s,
-            prefix="s", limit=self.limit,
+            conn,
+            self.key,
+            self.acquire_timeout_s,
+            self.lease_ttl_s,
+            prefix="s",
+            limit=self.limit,
         )
 
     def _proto_release(self, conn: SyncConn, token: str) -> None:
@@ -735,14 +749,21 @@ class DistributedSemaphore(_SyncBase):
 
     def _proto_renew(self, conn: SyncConn, token: str) -> int:
         return renew(
-            conn, self.key, token, self.lease_ttl_s,
-            prefix="s", read_timeout=_RENEW_READ_TIMEOUT_S,
+            conn,
+            self.key,
+            token,
+            self.lease_ttl_s,
+            prefix="s",
+            read_timeout=_RENEW_READ_TIMEOUT_S,
         )
 
     def _proto_enqueue(self, conn: SyncConn) -> tuple[str, str | None, int | None]:
         return enqueue(
-            conn, self.key, self.lease_ttl_s,
-            prefix="s", limit=self.limit,
+            conn,
+            self.key,
+            self.lease_ttl_s,
+            prefix="s",
+            limit=self.limit,
         )
 
     def _proto_wait(self, conn: SyncConn, timeout_s: int) -> tuple[str, int]:

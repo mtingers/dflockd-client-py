@@ -35,7 +35,9 @@ class FakeConn:
     calls: list[_Call] = field(default_factory=list)
     closed: bool = False
 
-    async def command(self, cmd: str, key: str, arg: str, *, read_timeout: float) -> str:
+    async def command(
+        self, cmd: str, key: str, arg: str, *, read_timeout: float
+    ) -> str:
         self.calls.append(_Call(cmd, key, arg, read_timeout))
         return self.responses.pop(0)
 
@@ -246,9 +248,7 @@ class TestAsyncAuthenticate:
 class TestAsyncConnReadLine:
     async def test_strips_crlf(self):
         reader = MagicMock(spec=asyncio.StreamReader)
-        reader.readline = MagicMock(
-            return_value=_completed(b"ok abc 30\r\n")
-        )
+        reader.readline = MagicMock(return_value=_completed(b"ok abc 30\r\n"))
         writer = MagicMock(spec=asyncio.StreamWriter)
         conn = da.AsyncConn(reader, writer)
         assert await conn._read_line() == "ok abc 30"

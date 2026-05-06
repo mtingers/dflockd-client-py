@@ -22,9 +22,7 @@ def _key(prefix: str) -> str:
 
 
 async def _open_low_level(host: str, port: int) -> AsyncConn:
-    return await da.open_conn(
-        host, port, ssl_context=None, connect_timeout_s=5.0
-    )
+    return await da.open_conn(host, port, ssl_context=None, connect_timeout_s=5.0)
 
 
 # ===========================================================================
@@ -136,8 +134,13 @@ class TestAsyncStats:
         conn = await _open_low_level(host, port)
         try:
             result = await da.stats(conn)
-            assert {"connections", "locks", "semaphores",
-                    "idle_locks", "idle_semaphores"}.issubset(result.keys())
+            assert {
+                "connections",
+                "locks",
+                "semaphores",
+                "idle_locks",
+                "idle_semaphores",
+            }.issubset(result.keys())
         finally:
             await conn.close()
 
@@ -151,7 +154,9 @@ class TestAsyncDistributedLock:
     async def test_context_manager(self, server_host_port):
         host, port = server_host_port
         lock = AsyncDistributedLock(
-            key=_key("ctx"), acquire_timeout_s=5, lease_ttl_s=5,
+            key=_key("ctx"),
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         async with lock as held:
@@ -161,7 +166,9 @@ class TestAsyncDistributedLock:
     async def test_acquire_release_methods(self, server_host_port):
         host, port = server_host_port
         lock = AsyncDistributedLock(
-            key=_key("acq"), acquire_timeout_s=5, lease_ttl_s=5,
+            key=_key("acq"),
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         assert await lock.acquire() is True
@@ -173,11 +180,15 @@ class TestAsyncDistributedLock:
         host, port = server_host_port
         key = _key("timeout")
         holder = AsyncDistributedLock(
-            key=key, acquire_timeout_s=5, lease_ttl_s=30,
+            key=key,
+            acquire_timeout_s=5,
+            lease_ttl_s=30,
             servers=[(host, port)],
         )
         contender = AsyncDistributedLock(
-            key=key, acquire_timeout_s=0, lease_ttl_s=30,
+            key=key,
+            acquire_timeout_s=0,
+            lease_ttl_s=30,
             servers=[(host, port)],
         )
         await holder.acquire()
@@ -193,7 +204,9 @@ class TestAsyncDistributedLock:
 
         async def worker(n: int):
             inst = AsyncDistributedLock(
-                key=key, acquire_timeout_s=5, lease_ttl_s=5,
+                key=key,
+                acquire_timeout_s=5,
+                lease_ttl_s=5,
                 servers=[(host, port)],
             )
             async with inst:
@@ -209,7 +222,9 @@ class TestAsyncDistributedLock:
     async def test_two_phase_acquired(self, server_host_port):
         host, port = server_host_port
         lock = AsyncDistributedLock(
-            key=_key("two"), acquire_timeout_s=5, lease_ttl_s=5,
+            key=_key("two"),
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         try:
@@ -222,11 +237,15 @@ class TestAsyncDistributedLock:
         host, port = server_host_port
         key = _key("queued")
         l1 = AsyncDistributedLock(
-            key=key, acquire_timeout_s=5, lease_ttl_s=5,
+            key=key,
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         l2 = AsyncDistributedLock(
-            key=key, acquire_timeout_s=5, lease_ttl_s=5,
+            key=key,
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         await l1.acquire()
@@ -248,13 +267,17 @@ class TestAsyncDistributedLock:
         key = _key("fifo")
         N = 5
         holder = AsyncDistributedLock(
-            key=key, acquire_timeout_s=5, lease_ttl_s=10,
+            key=key,
+            acquire_timeout_s=5,
+            lease_ttl_s=10,
             servers=[(host, port)],
         )
         await holder.acquire()
         waiters = [
             AsyncDistributedLock(
-                key=key, acquire_timeout_s=10, lease_ttl_s=10,
+                key=key,
+                acquire_timeout_s=10,
+                lease_ttl_s=10,
                 servers=[(host, port)],
             )
             for _ in range(N)
@@ -277,14 +300,18 @@ class TestAsyncDistributedLock:
         host, port = server_host_port
         key = _key("disc")
         first = AsyncDistributedLock(
-            key=key, acquire_timeout_s=5, lease_ttl_s=30,
+            key=key,
+            acquire_timeout_s=5,
+            lease_ttl_s=30,
             servers=[(host, port)],
         )
         await first.acquire()
         await first.aclose()
         await asyncio.sleep(0.2)
         second = AsyncDistributedLock(
-            key=key, acquire_timeout_s=1, lease_ttl_s=30,
+            key=key,
+            acquire_timeout_s=1,
+            lease_ttl_s=30,
             servers=[(host, port)],
         )
         try:
@@ -297,7 +324,10 @@ class TestAsyncDistributedSemaphore:
     async def test_acquire_release(self, server_host_port):
         host, port = server_host_port
         sem = AsyncDistributedSemaphore(
-            key=_key("s"), limit=2, acquire_timeout_s=5, lease_ttl_s=5,
+            key=_key("s"),
+            limit=2,
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         assert await sem.acquire() is True
@@ -307,15 +337,24 @@ class TestAsyncDistributedSemaphore:
         host, port = server_host_port
         key = _key("s")
         s1 = AsyncDistributedSemaphore(
-            key=key, limit=2, acquire_timeout_s=5, lease_ttl_s=5,
+            key=key,
+            limit=2,
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         s2 = AsyncDistributedSemaphore(
-            key=key, limit=2, acquire_timeout_s=5, lease_ttl_s=5,
+            key=key,
+            limit=2,
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         s3 = AsyncDistributedSemaphore(
-            key=key, limit=2, acquire_timeout_s=0, lease_ttl_s=5,
+            key=key,
+            limit=2,
+            acquire_timeout_s=0,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         await s1.acquire()
@@ -353,14 +392,19 @@ class TestAsyncRenewLoop:
         host, port = server_host_port
         key = _key("renew-survives")
         holder = AsyncDistributedLock(
-            key=key, acquire_timeout_s=5, lease_ttl_s=2, renew_ratio=0.5,
+            key=key,
+            acquire_timeout_s=5,
+            lease_ttl_s=2,
+            renew_ratio=0.5,
             servers=[(host, port)],
         )
         await holder.acquire()
         try:
             await asyncio.sleep(4.0)
             contender = AsyncDistributedLock(
-                key=key, acquire_timeout_s=0, lease_ttl_s=5,
+                key=key,
+                acquire_timeout_s=0,
+                lease_ttl_s=5,
                 servers=[(host, port)],
             )
             assert await contender.acquire() is False, "renew failed — lease lapsed"
@@ -373,7 +417,9 @@ class TestAsyncInstanceReuse:
     async def test_acquire_release_acquire_round_trip(self, server_host_port):
         host, port = server_host_port
         lock = AsyncDistributedLock(
-            key=_key("reuse"), acquire_timeout_s=5, lease_ttl_s=5,
+            key=_key("reuse"),
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         for _ in range(3):
@@ -385,7 +431,9 @@ class TestAsyncInstanceReuse:
     async def test_acquire_after_acquire_silently_resets(self, server_host_port):
         host, port = server_host_port
         lock = AsyncDistributedLock(
-            key=_key("reset"), acquire_timeout_s=5, lease_ttl_s=30,
+            key=_key("reset"),
+            acquire_timeout_s=5,
+            lease_ttl_s=30,
             servers=[(host, port)],
         )
         await lock.acquire()
@@ -404,7 +452,9 @@ class TestAsyncContextManagerCleanup:
         host, port = server_host_port
         key = _key("ctx-exc")
         lock = AsyncDistributedLock(
-            key=key, acquire_timeout_s=5, lease_ttl_s=30,
+            key=key,
+            acquire_timeout_s=5,
+            lease_ttl_s=30,
             servers=[(host, port)],
         )
 
@@ -417,7 +467,9 @@ class TestAsyncContextManagerCleanup:
 
         assert lock.token is None
         contender = AsyncDistributedLock(
-            key=key, acquire_timeout_s=2, lease_ttl_s=5,
+            key=key,
+            acquire_timeout_s=2,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         try:
@@ -482,12 +534,13 @@ class TestAsyncStatsWithManyLocks:
 class TestAsyncTlsIntegration:
     async def test_lock_over_tls(self):
         port = int(os.environ["DFLOCKD_TEST_TLS_PORT"])
-        ctx = ssl.create_default_context(
-            cafile=os.environ.get("DFLOCKD_TEST_TLS_CA")
-        )
+        ctx = ssl.create_default_context(cafile=os.environ.get("DFLOCKD_TEST_TLS_CA"))
         lock = AsyncDistributedLock(
-            key=_key("tls"), acquire_timeout_s=5, lease_ttl_s=5,
-            servers=[("127.0.0.1", port)], ssl_context=ctx,
+            key=_key("tls"),
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
+            servers=[("127.0.0.1", port)],
+            ssl_context=ctx,
         )
         async with lock as held:
             assert held.token is not None
@@ -499,8 +552,11 @@ class TestAsyncAuthIntegration:
         port = int(os.environ["DFLOCKD_TEST_AUTH_PORT"])
         token = os.environ["DFLOCKD_TEST_AUTH_TOKEN"]
         lock = AsyncDistributedLock(
-            key=_key("auth"), acquire_timeout_s=5, lease_ttl_s=5,
-            servers=[("127.0.0.1", port)], auth_token=token,
+            key=_key("auth"),
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
+            servers=[("127.0.0.1", port)],
+            auth_token=token,
         )
         async with lock as held:
             assert held.token is not None
@@ -508,8 +564,11 @@ class TestAsyncAuthIntegration:
     async def test_bad_token_rejected(self):
         port = int(os.environ["DFLOCKD_TEST_AUTH_PORT"])
         lock = AsyncDistributedLock(
-            key=_key("auth"), acquire_timeout_s=5, lease_ttl_s=5,
-            servers=[("127.0.0.1", port)], auth_token="wrong-token",
+            key=_key("auth"),
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
+            servers=[("127.0.0.1", port)],
+            auth_token="wrong-token",
         )
         with pytest.raises(PermissionError, match="authentication failed"):
             await lock.acquire()

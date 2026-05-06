@@ -81,9 +81,7 @@ def _check_no_newlines(name: str, value: str) -> None:
         raise ValueError(f"{name} must not contain newlines")
 
 
-def validate_protocol_line(
-    name: str, value: str, *, allow_empty: bool = True
-) -> None:
+def validate_protocol_line(name: str, value: str, *, allow_empty: bool = True) -> None:
     if not allow_empty and value == "":
         raise ValueError(f"{name} must not be empty")
     _check_no_newlines(name, value)
@@ -304,9 +302,7 @@ def parse_renew_response(resp: str, *, op: str) -> int:
     return _decode_remaining(resp, op)
 
 
-def parse_enqueue_response(
-    resp: str, *, op: str
-) -> tuple[str, str | None, int | None]:
+def parse_enqueue_response(resp: str, *, op: str) -> tuple[str, str | None, int | None]:
     """Decode an enqueue response: ``("acquired", token, lease)`` or
     ``("queued", None, None)``."""
     if resp == "queued":

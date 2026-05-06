@@ -25,7 +25,13 @@ def test_dflockd_timeout_is_timeout_error():
 
 def test_protocol_errors_subclass_dflockd_error():
     for cls in (
-        AuthError, MaxLocksError, MaxWaitersError, LimitMismatchError,
-        NotQueuedError, AlreadyQueuedError, LeaseExpiredError, DrainingError,
+        AuthError,
+        MaxLocksError,
+        MaxWaitersError,
+        LimitMismatchError,
+        NotQueuedError,
+        AlreadyQueuedError,
+        LeaseExpiredError,
+        DrainingError,
     ):
         assert issubclass(cls, DflockdError)

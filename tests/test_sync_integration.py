@@ -155,8 +155,13 @@ class TestStats:
         conn = _open_low_level(host, port)
         try:
             result = ds.stats(conn)
-            assert {"connections", "locks", "semaphores",
-                    "idle_locks", "idle_semaphores"}.issubset(result.keys())
+            assert {
+                "connections",
+                "locks",
+                "semaphores",
+                "idle_locks",
+                "idle_semaphores",
+            }.issubset(result.keys())
         finally:
             conn.close()
 
@@ -183,7 +188,9 @@ class TestDistributedLock:
     def test_context_manager_grants_and_releases(self, server_host_port):
         host, port = server_host_port
         lock = SyncDistributedLock(
-            key=_key("ctx"), acquire_timeout_s=5, lease_ttl_s=5,
+            key=_key("ctx"),
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         with lock as held:
@@ -193,7 +200,9 @@ class TestDistributedLock:
     def test_acquire_release_methods(self, server_host_port):
         host, port = server_host_port
         lock = SyncDistributedLock(
-            key=_key("acq"), acquire_timeout_s=5, lease_ttl_s=5,
+            key=_key("acq"),
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         assert lock.acquire() is True
@@ -205,11 +214,15 @@ class TestDistributedLock:
         host, port = server_host_port
         key = _key("timeout")
         holder = SyncDistributedLock(
-            key=key, acquire_timeout_s=5, lease_ttl_s=30,
+            key=key,
+            acquire_timeout_s=5,
+            lease_ttl_s=30,
             servers=[(host, port)],
         )
         contender = SyncDistributedLock(
-            key=key, acquire_timeout_s=0, lease_ttl_s=30,
+            key=key,
+            acquire_timeout_s=0,
+            lease_ttl_s=30,
             servers=[(host, port)],
         )
         holder.acquire()
@@ -226,7 +239,9 @@ class TestDistributedLock:
 
         def worker(n: int):
             inst = SyncDistributedLock(
-                key=key, acquire_timeout_s=5, lease_ttl_s=5,
+                key=key,
+                acquire_timeout_s=5,
+                lease_ttl_s=5,
                 servers=[(host, port)],
             )
             with inst:
@@ -246,7 +261,9 @@ class TestDistributedLock:
     def test_two_phase_acquired_immediately(self, server_host_port):
         host, port = server_host_port
         lock = SyncDistributedLock(
-            key=_key("two"), acquire_timeout_s=5, lease_ttl_s=5,
+            key=_key("two"),
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         try:
@@ -260,11 +277,15 @@ class TestDistributedLock:
         host, port = server_host_port
         key = _key("queued")
         l1 = SyncDistributedLock(
-            key=key, acquire_timeout_s=5, lease_ttl_s=5,
+            key=key,
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         l2 = SyncDistributedLock(
-            key=key, acquire_timeout_s=5, lease_ttl_s=5,
+            key=key,
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         l1.acquire()
@@ -289,13 +310,17 @@ class TestDistributedLock:
         key = _key("fifo")
         N = 5
         holder = SyncDistributedLock(
-            key=key, acquire_timeout_s=5, lease_ttl_s=10,
+            key=key,
+            acquire_timeout_s=5,
+            lease_ttl_s=10,
             servers=[(host, port)],
         )
         holder.acquire()
         waiters = [
             SyncDistributedLock(
-                key=key, acquire_timeout_s=10, lease_ttl_s=10,
+                key=key,
+                acquire_timeout_s=10,
+                lease_ttl_s=10,
                 servers=[(host, port)],
             )
             for _ in range(N)
@@ -314,8 +339,7 @@ class TestDistributedLock:
             w.release()
 
         threads = [
-            threading.Thread(target=runner, args=(i, w))
-            for i, w in enumerate(waiters)
+            threading.Thread(target=runner, args=(i, w)) for i, w in enumerate(waiters)
         ]
         for t in threads:
             t.start()
@@ -329,14 +353,18 @@ class TestDistributedLock:
         host, port = server_host_port
         key = _key("disc")
         first = SyncDistributedLock(
-            key=key, acquire_timeout_s=5, lease_ttl_s=30,
+            key=key,
+            acquire_timeout_s=5,
+            lease_ttl_s=30,
             servers=[(host, port)],
         )
         first.acquire()
         first.close()  # forces disconnect without server-side release
         time.sleep(0.2)
         second = SyncDistributedLock(
-            key=key, acquire_timeout_s=1, lease_ttl_s=30,
+            key=key,
+            acquire_timeout_s=1,
+            lease_ttl_s=30,
             servers=[(host, port)],
         )
         try:
@@ -354,7 +382,10 @@ class TestDistributedSemaphore:
     def test_acquire_release(self, server_host_port):
         host, port = server_host_port
         sem = SyncDistributedSemaphore(
-            key=_key("s"), limit=2, acquire_timeout_s=5, lease_ttl_s=5,
+            key=_key("s"),
+            limit=2,
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         assert sem.acquire() is True
@@ -365,15 +396,24 @@ class TestDistributedSemaphore:
         host, port = server_host_port
         key = _key("s")
         s1 = SyncDistributedSemaphore(
-            key=key, limit=2, acquire_timeout_s=5, lease_ttl_s=5,
+            key=key,
+            limit=2,
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         s2 = SyncDistributedSemaphore(
-            key=key, limit=2, acquire_timeout_s=5, lease_ttl_s=5,
+            key=key,
+            limit=2,
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         s3 = SyncDistributedSemaphore(
-            key=key, limit=2, acquire_timeout_s=0, lease_ttl_s=5,
+            key=key,
+            limit=2,
+            acquire_timeout_s=0,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         s1.acquire()
@@ -389,13 +429,19 @@ class TestDistributedSemaphore:
         key = _key("s")
         N = 4
         holder = SyncDistributedSemaphore(
-            key=key, limit=1, acquire_timeout_s=5, lease_ttl_s=10,
+            key=key,
+            limit=1,
+            acquire_timeout_s=5,
+            lease_ttl_s=10,
             servers=[(host, port)],
         )
         holder.acquire()
         waiters = [
             SyncDistributedSemaphore(
-                key=key, limit=1, acquire_timeout_s=10, lease_ttl_s=10,
+                key=key,
+                limit=1,
+                acquire_timeout_s=10,
+                lease_ttl_s=10,
                 servers=[(host, port)],
             )
             for _ in range(N)
@@ -414,8 +460,7 @@ class TestDistributedSemaphore:
             w.release()
 
         threads = [
-            threading.Thread(target=runner, args=(i, w))
-            for i, w in enumerate(waiters)
+            threading.Thread(target=runner, args=(i, w)) for i, w in enumerate(waiters)
         ]
         for t in threads:
             t.start()
@@ -439,14 +484,19 @@ class TestRenewUpdatesLease:
         # 2s lease, renew at 1s → second contender shouldn't grab the key
         # even after we sleep 4s (twice the original lease).
         holder = SyncDistributedLock(
-            key=key, acquire_timeout_s=5, lease_ttl_s=2, renew_ratio=0.5,
+            key=key,
+            acquire_timeout_s=5,
+            lease_ttl_s=2,
+            renew_ratio=0.5,
             servers=[(host, port)],
         )
         holder.acquire()
         try:
             time.sleep(4.0)  # twice the lease — survives only if renew works
             contender = SyncDistributedLock(
-                key=key, acquire_timeout_s=0, lease_ttl_s=5,
+                key=key,
+                acquire_timeout_s=0,
+                lease_ttl_s=5,
                 servers=[(host, port)],
             )
             assert contender.acquire() is False, "renew loop failed — lease lapsed"
@@ -459,8 +509,11 @@ class TestRenewUpdatesLease:
         after at least one renew tick, not the stale acquire-time value."""
         host, port = server_host_port
         lock = SyncDistributedLock(
-            key=_key("renew-lease"), acquire_timeout_s=5, lease_ttl_s=2,
-            renew_ratio=0.5, servers=[(host, port)],
+            key=_key("renew-lease"),
+            acquire_timeout_s=5,
+            lease_ttl_s=2,
+            renew_ratio=0.5,
+            servers=[(host, port)],
         )
         lock.acquire()
         try:
@@ -485,7 +538,9 @@ class TestInstanceReuse:
         ``_closed`` flag must all reset cleanly between cycles."""
         host, port = server_host_port
         lock = SyncDistributedLock(
-            key=_key("reuse"), acquire_timeout_s=5, lease_ttl_s=5,
+            key=_key("reuse"),
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         for _ in range(3):
@@ -500,7 +555,9 @@ class TestInstanceReuse:
         connection (auto-releasing server-side) and acquire fresh."""
         host, port = server_host_port
         lock = SyncDistributedLock(
-            key=_key("reset"), acquire_timeout_s=5, lease_ttl_s=30,
+            key=_key("reset"),
+            acquire_timeout_s=5,
+            lease_ttl_s=30,
             servers=[(host, port)],
         )
         lock.acquire()
@@ -521,7 +578,9 @@ class TestContextManagerCleanup:
         host, port = server_host_port
         key = _key("ctx-exc")
         lock = SyncDistributedLock(
-            key=key, acquire_timeout_s=5, lease_ttl_s=30,
+            key=key,
+            acquire_timeout_s=5,
+            lease_ttl_s=30,
             servers=[(host, port)],
         )
 
@@ -535,7 +594,9 @@ class TestContextManagerCleanup:
         assert lock.token is None
         # contender can grab the key immediately — proves release happened
         contender = SyncDistributedLock(
-            key=key, acquire_timeout_s=2, lease_ttl_s=5,
+            key=key,
+            acquire_timeout_s=2,
+            lease_ttl_s=5,
             servers=[(host, port)],
         )
         try:
@@ -587,9 +648,7 @@ class TestStatsWithManyLocks:
         # Hold ~200 locks concurrently; stats response is well past 4 KiB but
         # within the new 1 MiB cap. Anything that fits old behaviour also
         # fits the new constant — this proves the new constant is wired up.
-        holders = [
-            _open_low_level(host, port) for _ in range(200)
-        ]
+        holders = [_open_low_level(host, port) for _ in range(200)]
         tokens: list[tuple[str, str]] = []
         try:
             for i, c in enumerate(holders):
@@ -633,12 +692,13 @@ _skip_auth = pytest.mark.skipif(
 class TestTlsIntegration:
     def test_lock_over_tls(self):
         port = int(os.environ["DFLOCKD_TEST_TLS_PORT"])
-        ctx = ssl.create_default_context(
-            cafile=os.environ.get("DFLOCKD_TEST_TLS_CA")
-        )
+        ctx = ssl.create_default_context(cafile=os.environ.get("DFLOCKD_TEST_TLS_CA"))
         lock = SyncDistributedLock(
-            key=_key("tls"), acquire_timeout_s=5, lease_ttl_s=5,
-            servers=[("127.0.0.1", port)], ssl_context=ctx,
+            key=_key("tls"),
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
+            servers=[("127.0.0.1", port)],
+            ssl_context=ctx,
         )
         with lock as held:
             assert held.token is not None
@@ -650,8 +710,11 @@ class TestAuthIntegration:
         port = int(os.environ["DFLOCKD_TEST_AUTH_PORT"])
         token = os.environ["DFLOCKD_TEST_AUTH_TOKEN"]
         lock = SyncDistributedLock(
-            key=_key("auth"), acquire_timeout_s=5, lease_ttl_s=5,
-            servers=[("127.0.0.1", port)], auth_token=token,
+            key=_key("auth"),
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
+            servers=[("127.0.0.1", port)],
+            auth_token=token,
         )
         with lock as held:
             assert held.token is not None
@@ -659,8 +722,11 @@ class TestAuthIntegration:
     def test_bad_token_rejected(self):
         port = int(os.environ["DFLOCKD_TEST_AUTH_PORT"])
         lock = SyncDistributedLock(
-            key=_key("auth"), acquire_timeout_s=5, lease_ttl_s=5,
-            servers=[("127.0.0.1", port)], auth_token="wrong-token",
+            key=_key("auth"),
+            acquire_timeout_s=5,
+            lease_ttl_s=5,
+            servers=[("127.0.0.1", port)],
+            auth_token="wrong-token",
         )
         with pytest.raises(PermissionError, match="authentication failed"):
             lock.acquire()
