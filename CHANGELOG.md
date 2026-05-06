@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.0.1] - 2026-05-06
+
+### Fixed
+
+- Enforced protocol maximum bounds on server-supplied lease and renewal values before scheduling client-side renewals.
+- Normalized invalid UTF-8 responses from sync and async transports into `RuntimeError`, matching the malformed-response error contract.
+- Enforced sync response size limits on raw bytes before UTF-8 decoding.
+- Applied async command timeouts to both write drain and response reads while preserving external cancellation semantics.
+- Hardened sync renewal cleanup so stale renewal workers cannot update a reused lock or semaphore after shutdown.
+- Expanded unit coverage for protocol boundary validation, malformed transport responses, cancellation, and renewal races.
+
 ## [v2.0.0] - 2026-05-05
 
 ### Changed
@@ -23,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Removed the v1 pub/sub signal client APIs; dflockd v2 focuses this package on distributed locks and semaphores.
 
+[v2.0.1]: https://github.com/mtingers/dflockd-client-py/releases/tag/v2.0.1
 [v2.0.0]: https://github.com/mtingers/dflockd-client-py/releases/tag/v2.0.0
 
 ## [v1.9.0] - 2026-03-13
