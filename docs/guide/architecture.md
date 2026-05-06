@@ -115,6 +115,10 @@ Concurrency: `_io_lock` serialises the renewal worker against
 so a `release()` issued while a renew is in flight is processed cleanly
 once the renew completes.
 
+If a renew command fails, the connection is no longer safe to reuse. The
+client logs the loss, closes that connection, clears the local token and
+lease, and lets the server-side lease expire if it has not already.
+
 ### Cleanup
 
 | Call               | Stops renewal | Sends release | Closes connection |

@@ -255,6 +255,16 @@ class TestSyncAuthenticate:
         with pytest.raises(PermissionError):
             ds.authenticate(_conn("error_auth"), "secret")
 
+    def test_maybe_authenticate_none_skips_auth(self):
+        conn = _conn()
+        assert ds._maybe_authenticate(conn, None) is conn
+        assert _calls(conn) == []
+
+    def test_maybe_authenticate_empty_string_is_explicit_token(self):
+        conn = _conn("ok")
+        assert ds._maybe_authenticate(conn, "") is conn
+        assert _calls(conn)[0].cmd == "auth"
+
 
 # ---------------------------------------------------------------------------
 # renew_interval
@@ -362,6 +372,38 @@ class TestSyncRenewLoopUpdatesLease:
         lock.token = "tok"
         lock._update_lease(0)
         assert lock.lease == 0
+
+    def test_renew_failure_drops_broken_connection(self):
+        class Lock(ds.DistributedLock):
+            def _proto_renew(self, conn: ds.SyncConn, token: str) -> int:
+                raise RuntimeError("boom")
+
+        conn = _conn()
+        lock = Lock(key="k")
+        lock._conn = conn
+        lock.token = "tok"
+        lock.lease = 10
+
+        assert lock._renew_tick() is None
+        assert lock._conn is None
+        assert lock.token is None
+        assert lock.lease == 0
+        assert cast(FakeConn, conn).closed is True
+
+    def test_stopping_renew_failure_still_drops_broken_connection(self):
+        conn = _conn()
+        lock = ds.DistributedLock(key="k")
+        lock._conn = conn
+        lock.token = "tok"
+        lock.lease = 10
+        lock._stop_event.set()
+
+        lock._handle_renew_failure(conn)
+
+        assert lock._conn is None
+        assert lock.token is None
+        assert lock.lease == 0
+        assert cast(FakeConn, conn).closed is True
 
 
 # ---------------------------------------------------------------------------

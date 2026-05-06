@@ -463,8 +463,12 @@ class TestParseStatsResponse:
         assert result["locks"] == []
 
     def test_non_ok(self):
-        with pytest.raises(RuntimeError, match="stats failed"):
+        with pytest.raises(DflockdError, match="stats failed"):
             proto.parse_stats_response("error")
+
+    def test_status_error_maps_to_sentinel(self):
+        with pytest.raises(AuthError):
+            proto.parse_stats_response("error_auth")
 
     def test_malformed_json(self):
         with pytest.raises(RuntimeError, match="bad stats response"):

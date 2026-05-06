@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import warnings
 from dataclasses import dataclass, field
 from typing import cast
@@ -226,6 +227,16 @@ class TestAsyncAuthenticate:
         with pytest.raises(PermissionError):
             await da.authenticate(_conn("error_auth"), "secret")
 
+    async def test_maybe_authenticate_none_skips_auth(self):
+        conn = _conn()
+        assert await da._maybe_authenticate(conn, None) is conn
+        assert _calls(conn) == []
+
+    async def test_maybe_authenticate_empty_string_is_explicit_token(self):
+        conn = _conn("ok")
+        assert await da._maybe_authenticate(conn, "") is conn
+        assert _calls(conn)[0].cmd == "auth"
+
 
 # ---------------------------------------------------------------------------
 # AsyncConn read-line and oversized-response handling
@@ -250,10 +261,53 @@ class TestAsyncConnReadLine:
         with pytest.raises(ConnectionError):
             await conn._read_line()
 
+    async def test_reader_limit_error_raises_runtime_error(self):
+        reader = MagicMock(spec=asyncio.StreamReader)
+        reader.readline = MagicMock(return_value=_failed(ValueError("too long")))
+        writer = MagicMock(spec=asyncio.StreamWriter)
+        conn = da.AsyncConn(reader, writer)
+        with pytest.raises(RuntimeError, match="line length"):
+            await conn._read_line()
 
-def _completed(value: bytes):
-    fut: asyncio.Future[bytes] = asyncio.Future()
+
+class TestAsyncConnCommand:
+    async def test_timeout_after_write_closes_transport(self):
+        reader = MagicMock(spec=asyncio.StreamReader)
+        reader.readline = MagicMock(return_value=asyncio.Future())
+        writer = MagicMock(spec=asyncio.StreamWriter)
+        writer.drain = MagicMock(return_value=_completed(None))
+        conn = da.AsyncConn(reader, writer)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await conn.command("l", "k", "0", read_timeout=0.01)
+
+        writer.close.assert_called_once()
+
+    async def test_cancellation_after_write_closes_transport(self):
+        reader = MagicMock(spec=asyncio.StreamReader)
+        reader.readline = MagicMock(return_value=asyncio.Future())
+        writer = MagicMock(spec=asyncio.StreamWriter)
+        writer.drain = MagicMock(return_value=_completed(None))
+        conn = da.AsyncConn(reader, writer)
+
+        task = asyncio.create_task(conn.command("l", "k", "5", read_timeout=30))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        writer.close.assert_called_once()
+
+
+def _completed(value: object):
+    fut: asyncio.Future = asyncio.Future()
     fut.set_result(value)
+    return fut
+
+
+def _failed(exc: BaseException):
+    fut: asyncio.Future = asyncio.Future()
+    fut.set_exception(exc)
     return fut
 
 
@@ -325,6 +379,23 @@ class TestAsyncRenewLoopUpdatesLease:
         lock._closed = True
         lock._update_lease(42)
         assert lock.lease == 0
+
+    async def test_renew_failure_drops_broken_connection(self):
+        class Lock(da.DistributedLock):
+            async def _proto_renew(self, conn: da.AsyncConn, token: str) -> int:
+                raise RuntimeError("boom")
+
+        conn = _conn()
+        lock = Lock(key="k")
+        lock._conn = conn
+        lock.token = "tok"
+        lock.lease = 10
+
+        assert await lock._renew_tick() is None
+        assert lock._conn is None
+        assert lock.token is None
+        assert lock.lease == 0
+        assert cast(FakeConn, conn).closed is True
 
 
 class TestAsyncLifecycleCancellation:
@@ -404,3 +475,29 @@ class TestAsyncLifecycleCancellation:
         renew_continue.set()
         assert await release_task is True
         assert events == ["renew-start", "renew-end", "release"]
+
+    async def test_aclose_propagates_cancellation_while_stopping_renew(self):
+        cancel_seen = asyncio.Event()
+        finish_cancel = asyncio.Event()
+
+        async def slow_cancel() -> None:
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                cancel_seen.set()
+                await finish_cancel.wait()
+                raise
+
+        lock = da.DistributedLock(key="k")
+        renew_task = asyncio.create_task(slow_cancel())
+        lock._renew_task = renew_task
+
+        close_task = asyncio.create_task(lock.aclose())
+        await cancel_seen.wait()
+        close_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await close_task
+
+        finish_cancel.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await renew_task

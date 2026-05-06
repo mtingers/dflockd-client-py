@@ -52,12 +52,24 @@ class AsyncConn:
         self, cmd: str, key: str, arg: str, *, read_timeout: float
     ) -> str:
         async with self._mu:
-            self._writer.write(proto.encode_lines(cmd, key, arg))
-            await self._writer.drain()
-            return await asyncio.wait_for(self._read_line(), timeout=read_timeout)
+            write_committed = False
+            try:
+                self._writer.write(proto.encode_lines(cmd, key, arg))
+                write_committed = True
+                await self._writer.drain()
+                return await asyncio.wait_for(
+                    self._read_line(), timeout=read_timeout
+                )
+            except BaseException:
+                if write_committed:
+                    self.close_nowait()
+                raise
 
     async def _read_line(self) -> str:
-        raw = await self._reader.readline()
+        try:
+            raw = await self._reader.readline()
+        except ValueError as e:
+            raise RuntimeError("server response exceeded line length limit") from e
         if raw == b"":
             raise ConnectionError("server closed connection")
         return _trim_response_line(raw)
@@ -548,8 +560,17 @@ class _AsyncBase(metaclass=ABCMeta):
         try:
             return await self._proto_renew(conn, token)
         except Exception:
-            self._log_renew_failure()
+            self._handle_renew_failure(conn)
             return None
+
+    def _handle_renew_failure(self, conn: AsyncConn) -> None:
+        if self._closed:
+            return
+        self._log_renew_failure()
+        if self._conn is conn:
+            self._conn = None
+            self._clear_held_state()
+            conn.close_nowait()
 
     def _log_renew_failure(self) -> None:
         if self._closed:
@@ -582,7 +603,7 @@ def _validate_renew_ratio(ratio: float) -> None:
 async def _maybe_authenticate(
     conn: AsyncConn, auth_token: str | None
 ) -> AsyncConn:
-    if not auth_token:
+    if auth_token is None:
         return conn
     try:
         await authenticate(conn, auth_token)
@@ -593,9 +614,16 @@ async def _maybe_authenticate(
 
 
 async def _cancel_and_wait(task: asyncio.Task[None]) -> None:
+    caller = asyncio.current_task()
+    cancel_count = caller.cancelling() if caller is not None else 0
     task.cancel()
-    with contextlib.suppress(BaseException):
-        await task
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        if caller is not None and caller.cancelling() > cancel_count:
+            raise
+    except Exception:
+        pass
 
 
 def _warn_if_leaked_conn(obj: "_AsyncBase") -> None:

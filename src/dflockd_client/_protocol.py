@@ -329,7 +329,7 @@ def parse_auth_response(resp: str) -> None:
 
 def parse_stats_response(resp: str) -> StatsResult:
     if not resp.startswith("ok "):
-        raise RuntimeError(f"stats failed: {resp!r}")
+        raise_status_error("stats", resp)
     return _decode_stats_json(resp[3:])
 
 

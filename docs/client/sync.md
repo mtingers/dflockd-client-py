@@ -102,8 +102,9 @@ again to re-queue.
 
 Once a lock is held, a daemon `threading.Thread` sends `renew` requests
 every `lease * renew_ratio` seconds. Renewal failure is logged and the
-thread exits — the server-side lease then expires on its own. Renewal
-stops on `release()`, `close()`, or context-manager exit.
+thread exits. The client closes the broken connection, clears `token`
+and `lease`, and the server-side lease expires on its own if needed.
+Renewal stops on `release()`, `close()`, or context-manager exit.
 
 If the instance is garbage-collected while still holding a connection,
 `__del__` closes the underlying socket and emits a `ResourceWarning`.

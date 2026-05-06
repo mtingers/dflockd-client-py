@@ -600,8 +600,15 @@ class _SyncBase(metaclass=ABCMeta):
         try:
             return self._proto_renew(conn, token)
         except Exception:
-            self._log_renew_failure()
+            self._handle_renew_failure(conn)
             return None
+
+    def _handle_renew_failure(self, conn: SyncConn) -> None:
+        self._log_renew_failure()
+        if self._conn is conn:
+            self._conn = None
+            self._clear_held_state()
+            conn.close()
 
     def _log_renew_failure(self) -> None:
         if self._closed or self._stop_event.is_set():
@@ -632,7 +639,7 @@ def _validate_renew_ratio(ratio: float) -> None:
 
 
 def _maybe_authenticate(conn: SyncConn, auth_token: str | None) -> SyncConn:
-    if not auth_token:
+    if auth_token is None:
         return conn
     try:
         authenticate(conn, auth_token)
