@@ -398,6 +398,23 @@ class TestParseGrantResponse:
         with pytest.raises(RuntimeError, match="bad acquire response"):
             proto.parse_grant_response("ok tok -1", op="acquire")
 
+    def test_zero_lease(self):
+        with pytest.raises(RuntimeError, match="bad acquire response"):
+            proto.parse_grant_response("ok tok 0", op="acquire")
+
+    def test_lease_above_protocol_max(self):
+        # A misbehaving server returning a huge lease would otherwise drive
+        # the renew loop's sleep to centuries, masking lease expiry.
+        too_big = proto.MAX_PROTOCOL_SECONDS + 1
+        with pytest.raises(RuntimeError, match="bad acquire response"):
+            proto.parse_grant_response(f"ok tok {too_big}", op="acquire")
+
+    def test_max_protocol_seconds_lease_is_accepted(self):
+        _, lease = proto.parse_grant_response(
+            f"ok tok {proto.MAX_PROTOCOL_SECONDS}", op="acquire"
+        )
+        assert lease == proto.MAX_PROTOCOL_SECONDS
+
 
 class TestParseRenewResponse:
     def test_ok(self):
@@ -417,6 +434,11 @@ class TestParseRenewResponse:
     def test_negative_remaining(self):
         with pytest.raises(RuntimeError, match="bad renew response"):
             proto.parse_renew_response("ok -1", op="renew")
+
+    def test_remaining_above_protocol_max(self):
+        too_big = proto.MAX_PROTOCOL_SECONDS + 1
+        with pytest.raises(RuntimeError, match="bad renew response"):
+            proto.parse_renew_response(f"ok {too_big}", op="renew")
 
 
 class TestParseEnqueueResponse:
@@ -440,6 +462,20 @@ class TestParseEnqueueResponse:
     def test_malformed_acquired(self):
         with pytest.raises(RuntimeError, match="bad enqueue response"):
             proto.parse_enqueue_response("acquired tok", op="enqueue")
+
+    def test_acquired_zero_lease(self):
+        # _decode_token_lease's min_value=1 floor applies on this path too.
+        with pytest.raises(RuntimeError, match="bad enqueue response"):
+            proto.parse_enqueue_response("acquired tok 0", op="enqueue")
+
+    def test_acquired_negative_lease(self):
+        with pytest.raises(RuntimeError, match="bad enqueue response"):
+            proto.parse_enqueue_response("acquired tok -1", op="enqueue")
+
+    def test_acquired_lease_above_protocol_max(self):
+        too_big = proto.MAX_PROTOCOL_SECONDS + 1
+        with pytest.raises(RuntimeError, match="bad enqueue response"):
+            proto.parse_enqueue_response(f"acquired tok {too_big}", op="enqueue")
 
 
 class TestParseReleaseResponse:
@@ -500,7 +536,19 @@ class TestParseStatsResponse:
                 '"idle_locks":[],"idle_semaphores":[]}'
             ),
             (
+                '{"connections":null,"locks":[],"semaphores":[],'
+                '"idle_locks":[],"idle_semaphores":[]}'
+            ),
+            (
+                '{"connections":3.5,"locks":[],"semaphores":[],'
+                '"idle_locks":[],"idle_semaphores":[]}'
+            ),
+            (
                 '{"connections":3,"locks":{},"semaphores":[],'
+                '"idle_locks":[],"idle_semaphores":[]}'
+            ),
+            (
+                '{"connections":3,"locks":null,"semaphores":[],'
                 '"idle_locks":[],"idle_semaphores":[]}'
             ),
             (

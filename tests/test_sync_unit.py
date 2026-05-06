@@ -526,6 +526,18 @@ class TestSyncConnReadLine:
         with pytest.raises(RuntimeError, match="too large"):
             conn._read_line()
 
+    def test_invalid_utf8_response_raises_runtime_error(self):
+        from dflockd_client import _protocol as proto
+
+        sock = MagicMock(spec=socket.socket)
+        conn = ds.SyncConn(sock)
+        conn._rfile = MagicMock()
+        conn._rfile.readline.return_value = (
+            b"a" * (proto.MAX_RESPONSE_LINE_BYTES - 1)
+        ) + b"\xc3"
+        with pytest.raises(RuntimeError, match="not valid UTF-8"):
+            conn._read_line()
+
 
 class TestSyncConnCommand:
     def test_timeout_after_write_closes_transport(self):

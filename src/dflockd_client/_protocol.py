@@ -356,7 +356,10 @@ def _parse_int_field(raw: str, op: str, resp: str, *, min_value: int) -> int:
         value = int(raw)
     except ValueError as e:
         raise RuntimeError(f"bad {op} response: {resp!r}") from e
-    if value < min_value:
+    # Bound matches outgoing validate_*_seconds_range; rejects a server that
+    # stuffs a huge lease (which would otherwise drive renew_interval to a
+    # multi-century sleep and silently mask lease expiry).
+    if value < min_value or value > MAX_PROTOCOL_SECONDS:
         raise RuntimeError(f"bad {op} response: {resp!r}")
     return value
 

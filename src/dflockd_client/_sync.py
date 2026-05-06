@@ -103,7 +103,10 @@ class SyncConn:
 def _trim_response_line(raw: bytes) -> str:
     if len(raw) > proto.MAX_RESPONSE_LINE_BYTES:
         raise RuntimeError(f"server response too large ({len(raw)} bytes)")
-    return raw.decode("utf-8").rstrip("\r\n")
+    try:
+        return raw.decode("utf-8").rstrip("\r\n")
+    except UnicodeDecodeError as e:
+        raise RuntimeError(f"server response not valid UTF-8: {raw!r}") from e
 
 
 def _close_quietly(close: Callable[[], None]) -> None:

@@ -269,6 +269,14 @@ class TestAsyncConnReadLine:
         with pytest.raises(RuntimeError, match="line length"):
             await conn._read_line()
 
+    async def test_invalid_utf8_response_raises_runtime_error(self):
+        reader = MagicMock(spec=asyncio.StreamReader)
+        reader.readline = MagicMock(return_value=_completed(b"ok \xc3"))
+        writer = MagicMock(spec=asyncio.StreamWriter)
+        conn = da.AsyncConn(reader, writer)
+        with pytest.raises(RuntimeError, match="not valid UTF-8"):
+            await conn._read_line()
+
 
 class TestAsyncConnCommand:
     async def test_drain_timeout_closes_transport(self):
@@ -307,6 +315,27 @@ class TestAsyncConnCommand:
 
         task = asyncio.create_task(conn.command("l", "k", "5", read_timeout=30))
         await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        writer.close.assert_called_once()
+
+    async def test_external_cancellation_during_drain_propagates(self):
+        drain_started = asyncio.Event()
+
+        async def slow_drain() -> None:
+            drain_started.set()
+            await asyncio.sleep(10)
+
+        reader = MagicMock(spec=asyncio.StreamReader)
+        reader.readline = MagicMock(return_value=asyncio.Future())
+        writer = MagicMock(spec=asyncio.StreamWriter)
+        writer.drain = slow_drain
+        conn = da.AsyncConn(reader, writer)
+
+        task = asyncio.create_task(conn.command("l", "k", "5", read_timeout=30))
+        await drain_started.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
