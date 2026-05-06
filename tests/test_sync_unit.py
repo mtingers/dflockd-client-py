@@ -293,6 +293,18 @@ class TestSyncLockConstruction:
         assert lock.servers == [("127.0.0.1", 6388)]
         assert lock.token is None
 
+    def test_invalid_key_raises_at_construction(self):
+        with pytest.raises(ValueError, match="must not contain whitespace"):
+            ds.DistributedLock(key="bad key")
+
+    def test_invalid_acquire_timeout_raises_at_construction(self):
+        with pytest.raises(ValueError, match=">= 0"):
+            ds.DistributedLock(key="k", acquire_timeout_s=-1)
+
+    def test_invalid_lease_ttl_raises_at_construction(self):
+        with pytest.raises(ValueError, match=">= 1"):
+            ds.DistributedLock(key="k", lease_ttl_s=0)
+
     def test_empty_servers_raises(self):
         with pytest.raises(ValueError, match="non-empty"):
             ds.DistributedLock(key="k", servers=[])
@@ -306,6 +318,18 @@ class TestSyncLockConstruction:
 
     def test_ssl_context_default_none(self):
         assert ds.DistributedLock(key="k").ssl_context is None
+
+    def test_negative_shard_index_raises_instead_of_routing_last_server(self):
+        def bad_shard(_: str, __: int) -> int:
+            return -1
+
+        lock = ds.DistributedLock(
+            key="k",
+            servers=[("a", 1), ("b", 2)],
+            sharding_strategy=bad_shard,
+        )
+        with pytest.raises(IndexError, match="returned index -1"):
+            lock._pick_server()
 
 
 class TestSyncSemaphoreConstruction:
@@ -435,3 +459,18 @@ class TestSyncConnReadLine:
         conn._rfile.readline.return_value = "x" * (proto.MAX_RESPONSE_LINE_BYTES + 1)
         with pytest.raises(RuntimeError, match="too large"):
             conn._read_line()
+
+
+class TestSyncConnCommand:
+    def test_timeout_after_write_closes_transport(self):
+        sock = MagicMock(spec=socket.socket)
+        conn = ds.SyncConn(sock)
+        conn._rfile = MagicMock()
+        conn._rfile.readline.side_effect = socket.timeout
+
+        with pytest.raises(socket.timeout):
+            conn.command("l", "k", "0", read_timeout=0.01)
+
+        sock.sendall.assert_called_once()
+        conn._rfile.close.assert_called_once()
+        sock.close.assert_called_once()

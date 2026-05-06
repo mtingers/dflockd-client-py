@@ -321,6 +321,18 @@ class TestAsyncLockConstruction:
         lock = da.DistributedLock(key="k")
         assert lock.servers == [("127.0.0.1", 6388)]
 
+    def test_invalid_key_raises_at_construction(self):
+        with pytest.raises(ValueError, match="must not contain whitespace"):
+            da.DistributedLock(key="bad key")
+
+    def test_invalid_acquire_timeout_raises_at_construction(self):
+        with pytest.raises(ValueError, match=">= 0"):
+            da.DistributedLock(key="k", acquire_timeout_s=-1)
+
+    def test_invalid_lease_ttl_raises_at_construction(self):
+        with pytest.raises(ValueError, match=">= 1"):
+            da.DistributedLock(key="k", lease_ttl_s=0)
+
     def test_empty_servers(self):
         with pytest.raises(ValueError, match="non-empty"):
             da.DistributedLock(key="k", servers=[])
@@ -334,6 +346,18 @@ class TestAsyncLockConstruction:
 
     def test_ssl_context_default(self):
         assert da.DistributedLock(key="k").ssl_context is None
+
+    def test_negative_shard_index_raises_instead_of_routing_last_server(self):
+        def bad_shard(_: str, __: int) -> int:
+            return -1
+
+        lock = da.DistributedLock(
+            key="k",
+            servers=[("a", 1), ("b", 2)],
+            sharding_strategy=bad_shard,
+        )
+        with pytest.raises(IndexError, match="returned index -1"):
+            lock._pick_server()
 
 
 class TestAsyncSemaphoreConstruction:

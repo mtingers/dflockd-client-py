@@ -18,7 +18,12 @@ from dataclasses import KW_ONLY, dataclass, field
 
 from . import _protocol as proto
 from .errors import DflockdTimeoutError
-from .sharding import DEFAULT_SERVERS, ShardingStrategy, stable_hash_shard
+from .sharding import (
+    DEFAULT_SERVERS,
+    ShardingStrategy,
+    _validate_shard_index,
+    stable_hash_shard,
+)
 
 log = logging.getLogger("dflockd_client")
 
@@ -306,6 +311,9 @@ class _AsyncBase(metaclass=ABCMeta):
     _closed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        proto.validate_key("key", self.key)
+        proto.validate_timeout_s("acquire_timeout_s", self.acquire_timeout_s)
+        proto.validate_lease_ttl_s(self.lease_ttl_s)
         _validate_servers(self.servers)
         _validate_renew_ratio(self.renew_ratio)
 
@@ -502,7 +510,10 @@ class _AsyncBase(metaclass=ABCMeta):
         self._conn = await _maybe_authenticate(conn, self.auth_token)
 
     def _pick_server(self) -> tuple[str, int]:
-        idx = self.sharding_strategy(self.key, len(self.servers))
+        idx = _validate_shard_index(
+            self.sharding_strategy(self.key, len(self.servers)),
+            len(self.servers),
+        )
         return self.servers[idx]
 
     def _require_conn(self) -> AsyncConn:
