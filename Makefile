@@ -18,7 +18,7 @@ test: ## Run tests
 	uv run pytest
 
 test-cov: ## Run tests with coverage
-	uv run pytest --cov=dflockd-client --cov-report=term-missing
+	uv run pytest --cov=dflockd_client --cov-report=term-missing
 
 clean: ## Remove build artifacts and caches
 	rm -rf build/ dist/ *.egg-info .mypy_cache .pytest_cache .ruff_cache htmlcov/ site/

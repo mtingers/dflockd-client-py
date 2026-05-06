@@ -19,7 +19,7 @@ tests that mock ``send_recv`` and never touch a real socket.
 from __future__ import annotations
 
 import json
-from typing import Any, NoReturn, TypedDict
+from typing import Any, NoReturn, TypedDict, cast
 
 from .errors import (
     AlreadyQueuedError,
@@ -61,6 +61,9 @@ class StatsResult(TypedDict):
     semaphores: list[dict[str, Any]]
     idle_locks: list[dict[str, Any]]
     idle_semaphores: list[dict[str, Any]]
+
+
+_STATS_LIST_FIELDS = ("locks", "semaphores", "idle_locks", "idle_semaphores")
 
 
 # ---------------------------------------------------------------------------
@@ -338,25 +341,48 @@ def _decode_token_lease(resp: str, status: str, op: str) -> tuple[str, int]:
     parts = resp.split()
     if len(parts) != 3 or parts[0] != status:
         raise RuntimeError(f"bad {op} response: {resp!r}")
-    return parts[1], _parse_int_field(parts[2], op, resp)
+    return parts[1], _parse_int_field(parts[2], op, resp, min_value=1)
 
 
 def _decode_remaining(resp: str, op: str) -> int:
     parts = resp.split()
     if len(parts) != 2 or parts[0] != "ok":
         raise RuntimeError(f"bad {op} response: {resp!r}")
-    return _parse_int_field(parts[1], op, resp)
+    return _parse_int_field(parts[1], op, resp, min_value=0)
 
 
-def _parse_int_field(raw: str, op: str, resp: str) -> int:
+def _parse_int_field(raw: str, op: str, resp: str, *, min_value: int) -> int:
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError as e:
         raise RuntimeError(f"bad {op} response: {resp!r}") from e
+    if value < min_value:
+        raise RuntimeError(f"bad {op} response: {resp!r}")
+    return value
 
 
 def _decode_stats_json(payload: str) -> StatsResult:
     try:
-        return json.loads(payload)
+        decoded = json.loads(payload)
     except json.JSONDecodeError as e:
         raise RuntimeError(f"bad stats response: {payload!r}") from e
+    return _validate_stats_result(decoded, payload)
+
+
+def _validate_stats_result(decoded: Any, payload: str) -> StatsResult:
+    if not isinstance(decoded, dict):
+        raise RuntimeError(f"bad stats response: {payload!r}")
+    connections = decoded.get("connections")
+    if (
+        isinstance(connections, bool)
+        or not isinstance(connections, int)
+        or connections < 0
+    ):
+        raise RuntimeError(f"bad stats response: {payload!r}")
+    for field in _STATS_LIST_FIELDS:
+        values = decoded.get(field)
+        if not isinstance(values, list) or any(
+            not isinstance(value, dict) for value in values
+        ):
+            raise RuntimeError(f"bad stats response: {payload!r}")
+    return cast(StatsResult, decoded)

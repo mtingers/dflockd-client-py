@@ -8,6 +8,7 @@ without hitting a real server.
 from __future__ import annotations
 
 import socket
+import threading
 import warnings
 from dataclasses import dataclass, field
 from typing import cast
@@ -431,6 +432,52 @@ class TestSyncRenewLoopUpdatesLease:
         assert lock.lease == 0
         assert cast(FakeConn, conn).closed is True
 
+    def test_old_renew_thread_stops_after_stop_event_replaced(self, monkeypatch):
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_started = threading.Event()
+        calls: list[str] = []
+
+        class Lock(ds.DistributedLock):
+            def _proto_renew(self, conn: ds.SyncConn, token: str) -> int:
+                calls.append(token)
+                if len(calls) == 1:
+                    first_started.set()
+                    assert release_first.wait(timeout=1)
+                    return 7
+                second_started.set()
+                return 7
+
+        monkeypatch.setattr(ds, "renew_interval", lambda lease, ratio: 0.01)
+        lock = Lock(key="k")
+        lock._conn = _conn()
+        lock.token = "old"
+        lock.lease = 10
+        lock._start_renew()
+
+        try:
+            assert first_started.wait(timeout=1)
+            old_stop_event = lock._stop_event
+            old_stop_event.set()
+            lock._stop_event = threading.Event()
+            lock.token = "new"
+            lock.lease = 99
+
+            release_first.set()
+            thread = lock._renew_thread
+            assert thread is not None
+            thread.join(timeout=0.2)
+
+            assert thread.is_alive() is False
+            assert second_started.is_set() is False
+            assert lock.lease == 99
+        finally:
+            release_first.set()
+            lock._stop_event.set()
+            thread = lock._renew_thread
+            if thread is not None:
+                thread.join(timeout=1)
+
 
 # ---------------------------------------------------------------------------
 # SyncConn read-line behaviour
@@ -438,18 +485,23 @@ class TestSyncRenewLoopUpdatesLease:
 
 
 class TestSyncConnReadLine:
+    def test_opens_socket_file_in_binary_mode(self):
+        sock = MagicMock(spec=socket.socket)
+        ds.SyncConn(sock)
+        sock.makefile.assert_called_once_with("rb")
+
     def test_strips_crlf(self):
         sock = MagicMock(spec=socket.socket)
         conn = ds.SyncConn(sock)
         conn._rfile = MagicMock()
-        conn._rfile.readline.return_value = "ok abc 30\r\n"
+        conn._rfile.readline.return_value = b"ok abc 30\r\n"
         assert conn._read_line() == "ok abc 30"
 
     def test_eof_raises_connection_error(self):
         sock = MagicMock(spec=socket.socket)
         conn = ds.SyncConn(sock)
         conn._rfile = MagicMock()
-        conn._rfile.readline.return_value = ""
+        conn._rfile.readline.return_value = b""
         with pytest.raises(ConnectionError, match="server closed connection"):
             conn._read_line()
 
@@ -459,7 +511,18 @@ class TestSyncConnReadLine:
         sock = MagicMock(spec=socket.socket)
         conn = ds.SyncConn(sock)
         conn._rfile = MagicMock()
-        conn._rfile.readline.return_value = "x" * (proto.MAX_RESPONSE_LINE_BYTES + 1)
+        conn._rfile.readline.return_value = b"x" * (proto.MAX_RESPONSE_LINE_BYTES + 1)
+        with pytest.raises(RuntimeError, match="too large"):
+            conn._read_line()
+
+    def test_oversized_multibyte_response_raises_by_byte_length(self):
+        from dflockd_client import _protocol as proto
+
+        sock = MagicMock(spec=socket.socket)
+        conn = ds.SyncConn(sock)
+        conn._rfile = MagicMock()
+        response = ("é" * (proto.MAX_RESPONSE_LINE_BYTES // 2 + 1)).encode()
+        conn._rfile.readline.return_value = response
         with pytest.raises(RuntimeError, match="too large"):
             conn._read_line()
 

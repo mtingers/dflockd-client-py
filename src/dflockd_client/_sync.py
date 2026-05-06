@@ -65,7 +65,7 @@ class SyncConn:
 
     def __init__(self, sock: socket.socket) -> None:
         self._sock = sock
-        self._rfile = sock.makefile("r", encoding="utf-8")
+        self._rfile = sock.makefile("rb")
         self._mu = threading.Lock()
 
     def command(
@@ -83,7 +83,7 @@ class SyncConn:
 
     def _read_line(self) -> str:
         raw = self._rfile.readline(proto.MAX_RESPONSE_LINE_BYTES + 1)
-        if raw == "":
+        if raw == b"":
             raise ConnectionError("server closed connection")
         return _trim_response_line(raw)
 
@@ -100,10 +100,10 @@ class SyncConn:
             pass
 
 
-def _trim_response_line(raw: str) -> str:
+def _trim_response_line(raw: bytes) -> str:
     if len(raw) > proto.MAX_RESPONSE_LINE_BYTES:
-        raise RuntimeError(f"server response too large ({len(raw)} chars)")
-    return raw.rstrip("\r\n")
+        raise RuntimeError(f"server response too large ({len(raw)} bytes)")
+    return raw.decode("utf-8").rstrip("\r\n")
 
 
 def _close_quietly(close: Callable[[], None]) -> None:
@@ -585,8 +585,12 @@ class _SyncBase(metaclass=ABCMeta):
     # --- renew thread --------------------------------------------------------
 
     def _start_renew(self) -> None:
+        stop_event = self._stop_event
         self._renew_thread = threading.Thread(
-            target=self._renew_loop, daemon=True, name=f"dflockd-renew[{self.key}]"
+            target=self._renew_loop,
+            args=(stop_event,),
+            daemon=True,
+            name=f"dflockd-renew[{self.key}]",
         )
         self._renew_thread.start()
 
@@ -598,40 +602,45 @@ class _SyncBase(metaclass=ABCMeta):
             self._renew_thread.join(timeout=5)
         self._renew_thread = None
 
-    def _renew_loop(self) -> None:
+    def _renew_loop(self, stop_event: threading.Event | None = None) -> None:
+        active_stop_event = stop_event if stop_event is not None else self._stop_event
         interval = renew_interval(self.lease, self.renew_ratio)
-        while not self._stop_event.wait(interval):
-            remaining = self._renew_tick()
-            if remaining is None:
+        while not active_stop_event.wait(interval):
+            remaining = self._renew_tick(active_stop_event)
+            if remaining is None or active_stop_event.is_set():
                 return
             interval = renew_interval(remaining, self.renew_ratio)
             self._update_lease(remaining)
 
-    def _renew_tick(self) -> int | None:
+    def _renew_tick(self, stop_event: threading.Event | None = None) -> int | None:
+        active_stop_event = stop_event if stop_event is not None else self._stop_event
         with self._io_lock:
-            if self._closed or self._stop_event.is_set():
+            if self._closed or active_stop_event.is_set():
                 return None
-            return self._safe_renew_once()
+            return self._safe_renew_once(active_stop_event)
 
-    def _safe_renew_once(self) -> int | None:
+    def _safe_renew_once(self, stop_event: threading.Event | None = None) -> int | None:
         conn, token = self._conn, self.token
         if conn is None or token is None:
             return None
         try:
             return self._proto_renew(conn, token)
         except Exception:
-            self._handle_renew_failure(conn)
+            self._handle_renew_failure(conn, stop_event)
             return None
 
-    def _handle_renew_failure(self, conn: SyncConn) -> None:
-        self._log_renew_failure()
+    def _handle_renew_failure(
+        self, conn: SyncConn, stop_event: threading.Event | None = None
+    ) -> None:
+        self._log_renew_failure(stop_event)
         if self._conn is conn:
             self._conn = None
             self._clear_held_state()
             conn.close()
 
-    def _log_renew_failure(self) -> None:
-        if self._closed or self._stop_event.is_set():
+    def _log_renew_failure(self, stop_event: threading.Event | None = None) -> None:
+        active_stop_event = stop_event if stop_event is not None else self._stop_event
+        if self._closed or active_stop_event.is_set():
             return
         log.error(
             "%s lost (renew failed): key=%s token=%s",

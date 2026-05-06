@@ -61,8 +61,9 @@ class AsyncConn:
             try:
                 self._writer.write(proto.encode_lines(cmd, key, arg))
                 write_committed = True
-                await self._writer.drain()
-                return await asyncio.wait_for(self._read_line(), timeout=read_timeout)
+                async with asyncio.timeout(read_timeout):
+                    await self._writer.drain()
+                    return await self._read_line()
             except BaseException:
                 if write_committed:
                     self.close_nowait()

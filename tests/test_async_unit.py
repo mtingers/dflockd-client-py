@@ -271,6 +271,21 @@ class TestAsyncConnReadLine:
 
 
 class TestAsyncConnCommand:
+    async def test_drain_timeout_closes_transport(self):
+        async def slow_drain() -> None:
+            await asyncio.sleep(0.2)
+
+        reader = MagicMock(spec=asyncio.StreamReader)
+        reader.readline = MagicMock(return_value=_completed(b"ok"))
+        writer = MagicMock(spec=asyncio.StreamWriter)
+        writer.drain = slow_drain
+        conn = da.AsyncConn(reader, writer)
+
+        with pytest.raises(asyncio.TimeoutError):
+            await conn.command("l", "k", "0", read_timeout=0.01)
+
+        writer.close.assert_called_once()
+
     async def test_timeout_after_write_closes_transport(self):
         reader = MagicMock(spec=asyncio.StreamReader)
         reader.readline = MagicMock(return_value=asyncio.Future())

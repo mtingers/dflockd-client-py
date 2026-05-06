@@ -394,6 +394,10 @@ class TestParseGrantResponse:
         with pytest.raises(RuntimeError, match="bad acquire response"):
             proto.parse_grant_response("ok tok notanint", op="acquire")
 
+    def test_negative_lease(self):
+        with pytest.raises(RuntimeError, match="bad acquire response"):
+            proto.parse_grant_response("ok tok -1", op="acquire")
+
 
 class TestParseRenewResponse:
     def test_ok(self):
@@ -409,6 +413,10 @@ class TestParseRenewResponse:
     def test_malformed(self):
         with pytest.raises(RuntimeError, match="bad renew response"):
             proto.parse_renew_response("ok junk", op="renew")
+
+    def test_negative_remaining(self):
+        with pytest.raises(RuntimeError, match="bad renew response"):
+            proto.parse_renew_response("ok -1", op="renew")
 
 
 class TestParseEnqueueResponse:
@@ -477,3 +485,38 @@ class TestParseStatsResponse:
     def test_malformed_json(self):
         with pytest.raises(RuntimeError, match="bad stats response"):
             proto.parse_stats_response("ok {not json")
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "[]",
+            '{"locks":[],"semaphores":[],"idle_locks":[],"idle_semaphores":[]}',
+            (
+                '{"connections":true,"locks":[],"semaphores":[],'
+                '"idle_locks":[],"idle_semaphores":[]}'
+            ),
+            (
+                '{"connections":-1,"locks":[],"semaphores":[],'
+                '"idle_locks":[],"idle_semaphores":[]}'
+            ),
+            (
+                '{"connections":3,"locks":{},"semaphores":[],'
+                '"idle_locks":[],"idle_semaphores":[]}'
+            ),
+            (
+                '{"connections":3,"locks":[1],"semaphores":[],'
+                '"idle_locks":[],"idle_semaphores":[]}'
+            ),
+        ],
+    )
+    def test_wrong_shape(self, payload):
+        with pytest.raises(RuntimeError, match="bad stats response"):
+            proto.parse_stats_response("ok " + payload)
+
+    def test_extra_fields_are_allowed(self):
+        payload = (
+            '{"connections":3,"locks":[],"semaphores":[],'
+            '"idle_locks":[],"idle_semaphores":[],"extra":"ok"}'
+        )
+        result = proto.parse_stats_response("ok " + payload)
+        assert result["connections"] == 3
