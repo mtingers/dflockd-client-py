@@ -1,7 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 
-from dflockd_client.client import DistributedLock
+from dflockd_client import AsyncDistributedLock as DistributedLock
 
 
 async def demo():

@@ -13,7 +13,8 @@ import statistics
 import threading
 import time
 
-from dflockd_client.sync_client import acquire, release
+from dflockd_client import SyncConn
+from dflockd_client._sync import acquire, release
 
 
 def parse_servers(raw: str) -> list[tuple[str, int]]:
@@ -33,17 +34,16 @@ def worker(
     idx: int,
 ) -> None:
     sock = socket.create_connection(server)
-    rfile = sock.makefile("r", encoding="utf-8")
+    conn = SyncConn(sock)
     latencies: list[float] = []
     try:
         for _ in range(rounds):
             t0 = time.perf_counter()
-            token, _ = acquire(sock, rfile, key, timeout_s, lease_ttl_s=10)
-            release(sock, rfile, key, token)
+            token, _ = acquire(conn, key, timeout_s, lease_ttl_s=10)
+            release(conn, key, token)
             latencies.append(time.perf_counter() - t0)
     finally:
-        rfile.close()
-        sock.close()
+        conn.close()
     results[idx] = latencies
 
 

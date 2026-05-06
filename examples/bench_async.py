@@ -13,7 +13,7 @@ import random
 import statistics
 import time
 
-from dflockd_client.client import acquire, release
+from dflockd_client._async import acquire, open_conn, release
 
 
 def parse_servers(raw: str) -> list[tuple[str, int]]:
@@ -30,17 +30,18 @@ async def worker(
     timeout_s: int,
     server: tuple[str, int],
 ) -> list[float]:
-    reader, writer = await asyncio.open_connection(*server)
+    conn = await open_conn(
+        server[0], server[1], ssl_context=None, connect_timeout_s=5.0
+    )
     latencies: list[float] = []
     try:
         for _ in range(rounds):
             t0 = time.perf_counter()
-            token, _ = await acquire(reader, writer, key, timeout_s, lease_ttl_s=10)
-            await release(reader, writer, key, token)
+            token, _ = await acquire(conn, key, timeout_s, lease_ttl_s=10)
+            await release(conn, key, token)
             latencies.append(time.perf_counter() - t0)
     finally:
-        writer.close()
-        await writer.wait_closed()
+        await conn.close()
     return latencies
 
 

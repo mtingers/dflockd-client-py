@@ -41,6 +41,9 @@ class FakeConn:
     async def close(self) -> None:
         self.closed = True
 
+    def close_nowait(self) -> None:
+        self.closed = True
+
 
 def _conn(*responses: str) -> da.AsyncConn:
     return cast(da.AsyncConn, FakeConn(responses=list(responses)))
@@ -293,7 +296,6 @@ class TestAsyncDelLeakWarning:
     def test_warns_when_conn_held(self):
         lock = da.DistributedLock(key="k", servers=[("127.0.0.1", 9999)])
         fake = MagicMock(spec=da.AsyncConn)
-        fake._writer = MagicMock()
         lock._conn = fake
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -301,7 +303,7 @@ class TestAsyncDelLeakWarning:
             lock._conn = None
         rw = [x for x in w if issubclass(x.category, ResourceWarning)]
         assert len(rw) == 1
-        fake._writer.close.assert_called_once()
+        fake.close_nowait.assert_called_once()
 
 
 class TestAsyncRenewLoopUpdatesLease:
@@ -323,3 +325,82 @@ class TestAsyncRenewLoopUpdatesLease:
         lock._closed = True
         lock._update_lease(42)
         assert lock.lease == 0
+
+
+class TestAsyncLifecycleCancellation:
+    async def test_release_cancellation_still_clears_state(self):
+        class Lock(da.DistributedLock):
+            async def _proto_release(self, conn: da.AsyncConn, token: str) -> None:
+                raise asyncio.CancelledError
+
+        conn = _conn()
+        lock = Lock(key="k")
+        lock._conn = conn
+        lock.token = "tok"
+        lock.lease = 10
+
+        with pytest.raises(asyncio.CancelledError):
+            await lock.release()
+
+        assert lock._conn is None
+        assert lock.token is None
+        assert lock.lease == 0
+        assert cast(FakeConn, conn).closed is True
+
+    async def test_aclose_cancellation_still_clears_state(self):
+        class CancelCloseConn(FakeConn):
+            async def close(self) -> None:
+                self.closed = True
+                raise asyncio.CancelledError
+
+        conn = cast(da.AsyncConn, CancelCloseConn())
+        lock = da.DistributedLock(key="k")
+        lock._conn = conn
+        lock.token = "tok"
+        lock.lease = 10
+
+        with pytest.raises(asyncio.CancelledError):
+            await lock.aclose()
+
+        assert lock._conn is None
+        assert lock.token is None
+        assert lock.lease == 0
+        assert cast(FakeConn, conn).closed is True
+
+    async def test_release_waits_for_in_flight_renew(self):
+        renew_started = asyncio.Event()
+        renew_continue = asyncio.Event()
+        events: list[str] = []
+
+        class Lock(da.DistributedLock):
+            async def _proto_renew(self, conn: da.AsyncConn, token: str) -> int:
+                events.append("renew-start")
+                renew_started.set()
+                await renew_continue.wait()
+                events.append("renew-end")
+                return 10
+
+            async def _proto_release(self, conn: da.AsyncConn, token: str) -> None:
+                events.append("release")
+
+        conn = _conn()
+        lock = Lock(key="k")
+        lock._conn = conn
+        lock.token = "tok"
+        lock.lease = 10
+
+        async def run_renew_tick() -> None:
+            await lock._renew_tick()
+
+        renew_task = asyncio.create_task(run_renew_tick())
+        lock._renew_task = renew_task
+        await renew_started.wait()
+
+        release_task = asyncio.create_task(lock.release())
+        await asyncio.sleep(0.05)
+        assert release_task.done() is False
+        assert renew_task.done() is False
+
+        renew_continue.set()
+        assert await release_task is True
+        assert events == ["renew-start", "renew-end", "release"]

@@ -63,12 +63,15 @@ class AsyncConn:
         return _trim_response_line(raw)
 
     async def close(self) -> None:
+        self.close_nowait()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self._writer.wait_closed(), timeout=5)
+
+    def close_nowait(self) -> None:
         try:
             self._writer.close()
         except Exception:
             pass
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(self._writer.wait_closed(), timeout=5)
 
 
 def _trim_response_line(raw: bytes) -> str:
@@ -422,11 +425,14 @@ class _AsyncBase(metaclass=ABCMeta):
     # --- release -------------------------------------------------------------
 
     async def _release_unlocked(self) -> bool:
-        await self._cancel_renew()
-        async with self._io_lock:
-            released = await self._send_release_quietly()
-        await self._close_unlocked()
-        return released
+        released = False
+        try:
+            async with self._io_lock:
+                await self._cancel_renew_locked()
+                released = await self._send_release_quietly()
+            return released
+        finally:
+            await self._close_unlocked()
 
     async def _send_release_quietly(self) -> bool:
         if self._conn is None or self.token is None:
@@ -447,18 +453,22 @@ class _AsyncBase(metaclass=ABCMeta):
     # --- close & reset -------------------------------------------------------
 
     async def _close_unlocked(self) -> None:
-        if self._closed:
+        if self._closed and self._conn is None and self._renew_task is None:
+            self._clear_held_state()
             return
         self._closed = True
+        conn = self._detach_conn()
+        if conn is not None:
+            conn.close_nowait()
         await self._cancel_renew()
-        await self._close_conn_quietly()
-        self._clear_held_state()
-
-    async def _close_conn_quietly(self) -> None:
-        conn = self._conn
-        self._conn = None
         if conn is not None:
             await conn.close()
+
+    def _detach_conn(self) -> AsyncConn | None:
+        conn = self._conn
+        self._conn = None
+        self._clear_held_state()
+        return conn
 
     def _clear_held_state(self) -> None:
         self.token = None
@@ -497,11 +507,17 @@ class _AsyncBase(metaclass=ABCMeta):
 
     async def _cancel_renew(self) -> None:
         task = self._renew_task
+        self._renew_task = None
         if task is None or task is asyncio.current_task():
-            self._renew_task = None
             return
         await _cancel_and_wait(task)
+
+    async def _cancel_renew_locked(self) -> None:
+        task = self._renew_task
         self._renew_task = None
+        if task is None or task is asyncio.current_task():
+            return
+        await _cancel_and_wait(task)
 
     async def _renew_loop(self) -> None:
         interval = renew_interval(self.lease, self.renew_ratio)
@@ -593,7 +609,7 @@ def _warn_if_leaked_conn(obj: "_AsyncBase") -> None:
                 ResourceWarning, stacklevel=2,
             )
             with contextlib.suppress(Exception):
-                obj._conn._writer.close()
+                obj._conn.close_nowait()
     except BaseException:
         pass
 
