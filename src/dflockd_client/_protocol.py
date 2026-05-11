@@ -19,6 +19,7 @@ tests that mock ``send_recv`` and never touch a real socket.
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any, NoReturn, TypedDict, cast
 
@@ -141,6 +142,17 @@ def validate_auth_token(token: str) -> None:
         raise ValueError(f"auth token too long (max {MAX_AUTH_TOKEN_BYTES} bytes)")
 
 
+def validate_connect_timeout_s(value: float) -> None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError("connect_timeout_s must be a number")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("connect_timeout_s must be finite")
+    if value <= 0:
+        raise ValueError("connect_timeout_s must be > 0")
+    if value > MAX_PROTOCOL_SECONDS:
+        raise ValueError(f"connect_timeout_s too large (max {MAX_PROTOCOL_SECONDS})")
+
+
 def validate_prefix(prefix: str) -> None:
     if prefix not in ("", "s"):
         raise ValueError(f"cmd_prefix must be '' or 's', got {prefix!r}")
@@ -192,6 +204,15 @@ def fence_from_token(token: str) -> int:
     if _FENCE_TOKEN_RE.fullmatch(token) is None:
         raise ValueError(f"token is not hexadecimal: {token!r}")
     return int(token[:16], 16)
+
+
+def token_for_log(token: str | None) -> str:
+    """Return a non-sensitive token label for diagnostic logs."""
+    if token is None:
+        return "<none>"
+    if len(token) <= 8:
+        return "<redacted>"
+    return f"{token[:8]}..."
 
 
 # ---------------------------------------------------------------------------

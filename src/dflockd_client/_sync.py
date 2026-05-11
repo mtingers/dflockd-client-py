@@ -31,6 +31,8 @@ from .errors import DflockdTimeoutError
 from .sharding import (
     DEFAULT_SERVERS,
     ShardingStrategy,
+    _validate_server_endpoint,
+    _validate_servers,
     _validate_shard_index,
     stable_hash_shard,
 )
@@ -133,6 +135,8 @@ def open_conn(
     The returned conn has ``connect_timeout_s`` set as its initial socket
     timeout; protocol functions override it per call.
     """
+    proto.validate_connect_timeout_s(connect_timeout_s)
+    host, port = _validate_server_endpoint(host, port)
     sock = _open_socket(host, port, connect_timeout_s, ssl_context)
     return SyncConn(sock)
 
@@ -365,6 +369,7 @@ class _SyncBase(metaclass=ABCMeta):
         proto.validate_key("key", self.key)
         proto.validate_timeout_s("acquire_timeout_s", self.acquire_timeout_s)
         proto.validate_lease_ttl_s(self.lease_ttl_s)
+        proto.validate_connect_timeout_s(self.connect_timeout_s)
         _validate_servers(self.servers)
         _validate_renew_ratio(self.renew_ratio)
 
@@ -649,7 +654,7 @@ class _SyncBase(metaclass=ABCMeta):
             "%s lost (renew failed): key=%s token=%s",
             type(self).__name__,
             self.key,
-            self.token,
+            proto.token_for_log(self.token),
         )
 
     def _update_lease(self, remaining: int) -> None:
@@ -660,11 +665,6 @@ class _SyncBase(metaclass=ABCMeta):
 # ---------------------------------------------------------------------------
 # Module-level helpers used by ``_SyncBase``
 # ---------------------------------------------------------------------------
-
-
-def _validate_servers(servers: list[tuple[str, int]]) -> None:
-    if not servers:
-        raise ValueError("servers must be a non-empty list")
 
 
 def _validate_renew_ratio(ratio: float) -> None:

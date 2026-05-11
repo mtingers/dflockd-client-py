@@ -312,6 +312,21 @@ class TestSyncLockConstruction:
         with pytest.raises(ValueError, match="non-empty"):
             ds.DistributedLock(key="k", servers=[])
 
+    def test_invalid_server_shape_raises_at_construction(self):
+        with pytest.raises(TypeError, match="\\(host, port\\)"):
+            ds.DistributedLock(
+                key="k",
+                servers=("127.0.0.1", 6388),  # type: ignore[arg-type]
+            )
+
+    def test_invalid_server_port_raises_at_construction(self):
+        with pytest.raises(ValueError, match="server port"):
+            ds.DistributedLock(key="k", servers=[("127.0.0.1", 70000)])
+
+    def test_invalid_connect_timeout_raises_at_construction(self):
+        with pytest.raises(ValueError, match="connect_timeout_s"):
+            ds.DistributedLock(key="k", connect_timeout_s=0)
+
     def test_renew_ratio_out_of_range(self):
         with pytest.raises(ValueError, match="renew_ratio"):
             ds.DistributedLock(key="k", renew_ratio=0)
@@ -431,6 +446,16 @@ class TestSyncRenewLoopUpdatesLease:
         assert lock.token is None
         assert lock.lease == 0
         assert cast(FakeConn, conn).closed is True
+
+    def test_renew_failure_log_redacts_token(self, caplog):
+        lock = ds.DistributedLock(key="k")
+        lock.token = "0123456789abcdef0123456789abcdef"
+
+        with caplog.at_level("ERROR", logger="dflockd_client"):
+            lock._log_renew_failure()
+
+        assert "01234567..." in caplog.text
+        assert lock.token not in caplog.text
 
     def test_old_renew_thread_stops_after_stop_event_replaced(self, monkeypatch):
         first_started = threading.Event()

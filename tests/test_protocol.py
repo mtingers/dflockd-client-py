@@ -189,6 +189,29 @@ class TestValidateAuthToken:
             proto.validate_auth_token("x" * (proto.MAX_AUTH_TOKEN_BYTES + 1))
 
 
+class TestValidateConnectTimeoutS:
+    def test_accepts_int_or_float(self):
+        proto.validate_connect_timeout_s(1)
+        proto.validate_connect_timeout_s(0.5)
+
+    def test_rejects_non_number(self):
+        with pytest.raises(TypeError, match="must be a number"):
+            proto.validate_connect_timeout_s("1")  # type: ignore[arg-type]
+
+    def test_rejects_bool(self):
+        with pytest.raises(TypeError, match="must be a number"):
+            proto.validate_connect_timeout_s(True)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("bad", [0, -1, float("inf"), float("nan")])
+    def test_rejects_non_positive_or_non_finite(self, bad):
+        with pytest.raises(ValueError):
+            proto.validate_connect_timeout_s(bad)
+
+    def test_rejects_too_large(self):
+        with pytest.raises(ValueError, match="too large"):
+            proto.validate_connect_timeout_s(proto.MAX_PROTOCOL_SECONDS + 1)
+
+
 # ---------------------------------------------------------------------------
 # fence_from_token
 # ---------------------------------------------------------------------------
@@ -243,6 +266,20 @@ class TestFenceFromToken:
         from dflockd_client import fence_from_token
 
         assert fence_from_token("0000000000000001" + "0" * 16) == 1
+
+
+class TestTokenForLog:
+    def test_none(self):
+        assert proto.token_for_log(None) == "<none>"
+
+    def test_short_token(self):
+        assert proto.token_for_log("short") == "<redacted>"
+
+    def test_long_token_redacts_tail(self):
+        token = "0123456789abcdef0123456789abcdef"
+        label = proto.token_for_log(token)
+        assert label == "01234567..."
+        assert token not in label
 
 
 # ---------------------------------------------------------------------------

@@ -1,9 +1,10 @@
 [project]
 name = "dflockd-client"
-version = "2.1.0"
+version = "2.1.1"
 description = "dflockd python client"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Matth Ingersoll", email = "matth@mtingers.com" }]
 requires-python = ">=3.12"
 dependencies = []

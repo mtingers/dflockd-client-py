@@ -21,6 +21,8 @@ from .errors import DflockdTimeoutError
 from .sharding import (
     DEFAULT_SERVERS,
     ShardingStrategy,
+    _validate_server_endpoint,
+    _validate_servers,
     _validate_shard_index,
     stable_hash_shard,
 )
@@ -113,6 +115,8 @@ async def open_conn(
 ) -> AsyncConn:
     """Pass ``limit`` so :meth:`StreamReader.readline` can buffer a large
     ``stats`` JSON line (asyncio's default is 64 KiB, which is too small)."""
+    proto.validate_connect_timeout_s(connect_timeout_s)
+    host, port = _validate_server_endpoint(host, port)
     reader, writer = await asyncio.wait_for(
         asyncio.open_connection(
             host,
@@ -317,6 +321,7 @@ class _AsyncBase(metaclass=ABCMeta):
         proto.validate_key("key", self.key)
         proto.validate_timeout_s("acquire_timeout_s", self.acquire_timeout_s)
         proto.validate_lease_ttl_s(self.lease_ttl_s)
+        proto.validate_connect_timeout_s(self.connect_timeout_s)
         _validate_servers(self.servers)
         _validate_renew_ratio(self.renew_ratio)
 
@@ -595,7 +600,7 @@ class _AsyncBase(metaclass=ABCMeta):
             "%s lost (renew failed): key=%s token=%s",
             type(self).__name__,
             self.key,
-            self.token,
+            proto.token_for_log(self.token),
         )
 
     def _update_lease(self, remaining: int) -> None:
@@ -606,11 +611,6 @@ class _AsyncBase(metaclass=ABCMeta):
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
-
-
-def _validate_servers(servers: list[tuple[str, int]]) -> None:
-    if not servers:
-        raise ValueError("servers must be a non-empty list")
 
 
 def _validate_renew_ratio(ratio: float) -> None:
