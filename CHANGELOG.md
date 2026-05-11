@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.1.0] - 2026-05-10
+
+### Added
+
+- `fence_from_token(token)` — decodes the 64-bit monotonic fence prefix from a grant token, mirroring the Go client's `FenceFromToken`. dflockd grant tokens are `<16-hex monotonic prefix><16-hex random salt>`; the prefix strictly increases on every grant from a server instance, so a token doubles as a fencing token for downstream resources. Exposed as an `int` and re-exported from the top-level `dflockd_client` package.
+
 ## [v2.0.1] - 2026-05-06
 
 ### Fixed
@@ -34,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Removed the v1 pub/sub signal client APIs; dflockd v2 focuses this package on distributed locks and semaphores.
 
+[v2.1.0]: https://github.com/mtingers/dflockd-client-py/releases/tag/v2.1.0
 [v2.0.1]: https://github.com/mtingers/dflockd-client-py/releases/tag/v2.0.1
 [v2.0.0]: https://github.com/mtingers/dflockd-client-py/releases/tag/v2.0.0
 

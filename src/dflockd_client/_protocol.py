@@ -19,6 +19,7 @@ tests that mock ``send_recv`` and never touch a real socket.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, NoReturn, TypedDict, cast
 
 from .errors import (
@@ -158,6 +159,39 @@ def _require_limit_for_semaphore(limit: int | None) -> None:
     if limit is None:
         raise ValueError("limit is required when cmd_prefix='s' (semaphore)")
     validate_semaphore_limit(limit)
+
+
+# ---------------------------------------------------------------------------
+# Fencing tokens
+# ---------------------------------------------------------------------------
+
+_FENCE_TOKEN_RE = re.compile(r"[0-9a-fA-F]{32}")
+
+
+def fence_from_token(token: str) -> int:
+    """Decode the 64-bit monotonic *fence prefix* from a server-issued token.
+
+    Every grant returns a 32-char lowercase-hex token whose first 16 hex chars
+    are a big-endian ``uint64`` that strictly increases on every grant from a
+    dflockd server instance — including across restarts on a non-regressing
+    wall clock, or unconditionally when the server runs with
+    ``--fence-state-file``. That makes the token usable as a fencing token: a
+    downstream resource stores the most recent fence it has observed for a key
+    and rejects any write whose fence compares less.
+
+    Comparison is meaningful **per key** only — the counter increments across
+    all keys, so the prefix order reflects when grants happened, not anything
+    about the resource. A ``limit > 1`` semaphore issues a distinct fence per
+    grant, so fencing orders the grants, not the resource.
+
+    Returns the prefix as a non-negative ``int`` in ``[0, 2**64)``. Raises
+    :class:`ValueError` if ``token`` is not exactly 32 hexadecimal characters.
+    """
+    if len(token) != 32:
+        raise ValueError(f"token must be 32 hex characters, got {len(token)}")
+    if _FENCE_TOKEN_RE.fullmatch(token) is None:
+        raise ValueError(f"token is not hexadecimal: {token!r}")
+    return int(token[:16], 16)
 
 
 # ---------------------------------------------------------------------------

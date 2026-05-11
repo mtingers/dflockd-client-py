@@ -190,6 +190,62 @@ class TestValidateAuthToken:
 
 
 # ---------------------------------------------------------------------------
+# fence_from_token
+# ---------------------------------------------------------------------------
+
+
+class TestFenceFromToken:
+    @pytest.mark.parametrize(
+        ("token", "expected"),
+        [
+            ("00000000000000017f3c1f2b3e9a8d6e", 1),
+            ("0001a3f217b3c4d8aaaaaaaaaaaaaaaa", 0x0001A3F217B3C4D8),
+            ("ffffffffffffffff0000000000000000", (1 << 64) - 1),
+            ("0000000000000000ffffffffffffffff", 0),
+        ],
+    )
+    def test_decodes_prefix(self, token, expected):
+        assert proto.fence_from_token(token) == expected
+
+    def test_ignores_salt(self):
+        prefix = "0001a3f217b3c4d8"
+        assert proto.fence_from_token(prefix + "0" * 16) == proto.fence_from_token(
+            prefix + "f" * 16
+        )
+
+    def test_accepts_uppercase(self):
+        assert (
+            proto.fence_from_token("0001A3F217B3C4D8" + "A" * 16) == 0x0001A3F217B3C4D8
+        )
+
+    def test_result_is_uint64(self):
+        f = proto.fence_from_token("ffffffffffffffff" + "0" * 16)
+        assert 0 <= f < (1 << 64)
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            "tooshort",
+            "g" * 32,
+            "0000000000000001" + "g" * 16,  # valid prefix, junk salt
+            "0" * 31,
+            "0" * 33,
+            " " + "0" * 31,  # int(_, 16) would strip the space — must not
+            "0x" + "0" * 30,  # int(_, 16) would accept the 0x prefix — must not
+        ],
+    )
+    def test_rejects_bad_input(self, bad):
+        with pytest.raises(ValueError):
+            proto.fence_from_token(bad)
+
+    def test_is_re_exported_from_package(self):
+        from dflockd_client import fence_from_token
+
+        assert fence_from_token("0000000000000001" + "0" * 16) == 1
+
+
+# ---------------------------------------------------------------------------
 # encode_lines
 # ---------------------------------------------------------------------------
 

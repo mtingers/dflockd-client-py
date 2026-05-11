@@ -24,6 +24,7 @@ from dflockd_client import (
     SyncConn,
     SyncDistributedLock,
     SyncDistributedSemaphore,
+    fence_from_token,
 )
 
 
@@ -87,6 +88,36 @@ class TestLowLevelLock:
             assert remaining >= 0
         finally:
             conn.close()
+
+
+class TestFencingTokens:
+    def test_grant_token_parses_as_fence(self, server_host_port):
+        host, port = server_host_port
+        conn = _open_low_level(host, port)
+        try:
+            key = _key("fence")
+            tok, _ = ds.acquire(conn, key, 5)
+            assert 0 <= fence_from_token(tok) < (1 << 64)
+            ds.release(conn, key, tok)
+        finally:
+            conn.close()
+
+    def test_successive_grants_are_ordered(self, server_host_port):
+        host, port = server_host_port
+        key = _key("fence")
+        c1 = _open_low_level(host, port)
+        try:
+            tok1, _ = ds.acquire(c1, key, 5)
+            ds.release(c1, key, tok1)
+        finally:
+            c1.close()
+        c2 = _open_low_level(host, port)
+        try:
+            tok2, _ = ds.acquire(c2, key, 5)
+            ds.release(c2, key, tok2)
+        finally:
+            c2.close()
+        assert fence_from_token(tok2) > fence_from_token(tok1)
 
 
 class TestLowLevelTwoPhase:

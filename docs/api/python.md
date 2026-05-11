@@ -15,9 +15,9 @@ from dflockd_client import (
     # transport
     SyncConn, AsyncConn,
 
-    # types
+    # types & helpers
     StatsResult, ShardingStrategy,
-    DEFAULT_SERVERS, stable_hash_shard,
+    DEFAULT_SERVERS, stable_hash_shard, fence_from_token,
 
     # exceptions
     DflockdError, DflockdTimeoutError,
@@ -135,6 +135,36 @@ def stable_hash_shard(key: str, num_servers: int) -> int: ...
 ```
 
 See [Sharding](../guide/sharding.md).
+
+## Fencing tokens
+
+```python
+def fence_from_token(token: str) -> int: ...
+```
+
+Every grant returns a 32-char hex token whose first 16 hex chars are a
+big-endian `uint64` — the **fence prefix** — minted from a server-side
+counter that strictly increases on every grant from a dflockd instance
+(also across restarts on a non-regressing wall clock, or unconditionally
+when the server runs with `--fence-state-file`). `fence_from_token` parses
+that prefix, so a grant token doubles as a
+[fencing token](https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html):
+a downstream resource stores the highest fence it has observed for a key
+and rejects any write whose fence compares less.
+
+```python
+from dflockd_client import SyncDistributedLock, fence_from_token
+
+with SyncDistributedLock("row:42") as lock:
+    fence = fence_from_token(lock.token)   # int in [0, 2**64) — pass to your DB / store
+    write_row(42, data, fence=fence)
+```
+
+Comparison is meaningful **per key** only — the counter is global, so the
+prefix order across different keys just reflects when grants happened. A
+`limit > 1` semaphore issues a distinct fence per grant, so fencing orders
+the grants, not the resource. Raises `ValueError` if the argument is not
+exactly 32 hexadecimal characters.
 
 ## Submodules
 

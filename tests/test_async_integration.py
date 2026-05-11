@@ -14,6 +14,7 @@ from dflockd_client import (
     AsyncConn,
     AsyncDistributedLock,
     AsyncDistributedSemaphore,
+    fence_from_token,
 )
 
 
@@ -63,6 +64,36 @@ class TestAsyncLowLevelLock:
             assert (await da.renew(conn, key, tok, lease_ttl_s=20)) >= 0
         finally:
             await conn.close()
+
+
+class TestAsyncFencingTokens:
+    async def test_grant_token_parses_as_fence(self, server_host_port):
+        host, port = server_host_port
+        conn = await _open_low_level(host, port)
+        try:
+            key = _key("fence")
+            tok, _ = await da.acquire(conn, key, 5)
+            assert 0 <= fence_from_token(tok) < (1 << 64)
+            await da.release(conn, key, tok)
+        finally:
+            await conn.close()
+
+    async def test_successive_grants_are_ordered(self, server_host_port):
+        host, port = server_host_port
+        key = _key("fence")
+        c1 = await _open_low_level(host, port)
+        try:
+            tok1, _ = await da.acquire(c1, key, 5)
+            await da.release(c1, key, tok1)
+        finally:
+            await c1.close()
+        c2 = await _open_low_level(host, port)
+        try:
+            tok2, _ = await da.acquire(c2, key, 5)
+            await da.release(c2, key, tok2)
+        finally:
+            await c2.close()
+        assert fence_from_token(tok2) > fence_from_token(tok1)
 
 
 class TestAsyncTwoPhase:

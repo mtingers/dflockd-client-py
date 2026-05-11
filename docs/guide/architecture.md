@@ -140,6 +140,24 @@ the configured `sharding_strategy(key, num_servers) → index`. The
 default is CRC-32 (`stable_hash_shard`) — deterministic across processes
 and matching the Go and TypeScript clients. See [Sharding](sharding.md).
 
+## Fencing tokens
+
+Every grant returns a 32-char hex token. Its first 16 hex chars are a
+big-endian `uint64` — the **fence prefix** — minted from a server-side
+counter that strictly increases on every grant. So the token also works
+as a [fencing token](https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html):
+`fence_from_token(token)` parses the prefix, and a downstream resource can
+store the highest fence it has observed for a key and reject any write
+whose fence compares less. The prefix is monotonic per server instance —
+and across restarts too, on a non-regressing wall clock, or
+unconditionally if the server runs with `--fence-state-file`.
+
+The client treats tokens as opaque otherwise; `fence_from_token` is the
+only thing that looks inside one. Comparison is meaningful per key (the
+counter is global, so cross-key order just reflects grant timing), and a
+`limit > 1` semaphore issues a distinct fence per grant — fencing orders
+the grants, not the resource.
+
 ## Module layout
 
 | Module                       | Contents |

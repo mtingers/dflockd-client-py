@@ -18,7 +18,7 @@ from . import _async, _sync
 from ._async import AsyncConn
 from ._async import DistributedLock as AsyncDistributedLock
 from ._async import DistributedSemaphore as AsyncDistributedSemaphore
-from ._protocol import StatsResult
+from ._protocol import StatsResult, fence_from_token
 from ._sync import DistributedLock as SyncDistributedLock
 from ._sync import DistributedSemaphore as SyncDistributedSemaphore
 from ._sync import SyncConn
@@ -57,6 +57,7 @@ __all__ = [
     "DEFAULT_SERVERS",
     "ShardingStrategy",
     "stable_hash_shard",
+    "fence_from_token",
     "AsyncConn",
     "AsyncDistributedLock",
     "AsyncDistributedSemaphore",

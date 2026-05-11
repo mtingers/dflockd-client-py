@@ -1,6 +1,6 @@
 [project]
 name = "dflockd-client"
-version = "2.0.1"
+version = "2.1.0"
 description = "dflockd python client"
 readme = "README.md"
 license = "MIT"
